@@ -1,4 +1,4 @@
-#include "InvertedIndex.cpp"
+#include "InvertedIndex.h"
 #include <unordered_set>
 #include <fstream>
 #include <string>
