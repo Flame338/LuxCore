@@ -19,6 +19,14 @@ std::string postings_of(const InvertedIndex& index, const std::string& term) {
     return text;
 }
 
+std::string terms_with_prefix_of(const InvertedIndex& index, const std::string& prefix) {
+    std::string text;
+    for (const TermPostings& match : index.terms_with_prefix(prefix)) {
+        text += std::string(match.term) + ",";
+    }
+    return text;
+}
+
 }
 
 TEST(index_returns_postings_with_term_frequencies) {
@@ -118,4 +126,33 @@ TEST(index_removing_an_unknown_document_does_nothing) {
 
     CHECK_EQ(index.get_total_documents(), 1);
     CHECK_EQ(postings_of(index, "cat"), "(1:1)");
+}
+
+TEST(index_lists_terms_with_a_prefix_in_sorted_order) {
+    InvertedIndex index;
+    index.add_document(1, TermFreqs{{"search", 1}, {"seal", 2}, {"sea", 1}, {"apple", 1}});
+    index.add_document(2, TermFreqs{{"searching", 1}});
+
+    CHECK_EQ(terms_with_prefix_of(index, "sea"), "sea,seal,search,searching,");
+    for (const TermPostings& match : index.terms_with_prefix("sea")) {
+        CHECK(match.postings == index.get_postings(std::string(match.term)));
+    }
+}
+
+TEST(index_prefix_scan_skips_terms_of_replaced_documents) {
+    InvertedIndex index;
+    index.add_document(1, TermFreqs{{"searching", 1}});
+    index.add_document(2, TermFreqs{{"search", 1}});
+    index.add_document(1, TermFreqs{{"apple", 1}});
+
+    CHECK_EQ(terms_with_prefix_of(index, "sear"), "search,");
+    CHECK_EQ(index.get_unique_terms_count(), static_cast<std::size_t>(2));
+}
+
+TEST(index_prefix_scan_returns_nothing_for_an_unmatched_prefix) {
+    InvertedIndex index;
+    index.add_document(1, TermFreqs{{"cat", 1}});
+
+    CHECK(index.terms_with_prefix("zz").empty());
+    CHECK(index.terms_with_prefix("cats").empty());
 }

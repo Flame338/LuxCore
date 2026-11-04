@@ -39,3 +39,11 @@ const std::vector<Posting>* InvertedIndex::get_postings(const std::string& term)
     }
     return nullptr;
 }
+
+std::vector<TermPostings> InvertedIndex::terms_with_prefix(std::string_view prefix) const {
+    std::vector<TermPostings> matches;
+    for (auto it = index.lower_bound(prefix); it != index.end() && it->first.starts_with(prefix); ++it) {
+        matches.push_back({it->first, &it->second});
+    }
+    return matches;
+}
