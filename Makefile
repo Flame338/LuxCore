@@ -1,7 +1,9 @@
 CXX      ?= g++
 MODE     ?= debug
 BUILD    := build/$(MODE)
-EXE      := $(BUILD)/luxcore$(if $(filter Windows_NT,$(OS)),.exe)
+EXT      := $(if $(filter Windows_NT,$(OS)),.exe)
+EXE      := $(BUILD)/luxcore$(EXT)
+TEST_EXE := $(BUILD)/luxtests$(EXT)
 
 CXXFLAGS := -std=c++20 -Wall -Wextra -Wpedantic -Iinclude -MMD -MP
 ifeq ($(MODE),release)
@@ -10,11 +12,13 @@ else
   CXXFLAGS += -O0 -g
 endif
 
-# main.cpp plus anything under src/ (one or two folders deep) is picked up automatically.
-SRCS := main.cpp $(wildcard src/*.cpp src/*/*.cpp)
-OBJS := $(SRCS:%.cpp=$(BUILD)/%.o)
+LIB_SRCS  := $(wildcard src/*.cpp src/*/*.cpp)
+TEST_SRCS := $(wildcard tests/*.cpp)
+LIB_OBJS  := $(LIB_SRCS:%.cpp=$(BUILD)/%.o)
+APP_OBJS  := $(BUILD)/main.o $(LIB_OBJS)
+TEST_OBJS := $(TEST_SRCS:%.cpp=$(BUILD)/%.o)
 
-.PHONY: all release run clean
+.PHONY: all release run test clean
 all: $(EXE)
 
 release:
@@ -23,14 +27,20 @@ release:
 run: $(EXE)
 	./$(EXE)
 
+test: $(TEST_EXE)
+	./$(TEST_EXE) $(T)
+
 clean:
 	rm -rf build
 
-$(EXE): $(OBJS)
-	$(CXX) $(OBJS) -o $@
+$(EXE): $(APP_OBJS)
+	$(CXX) $(APP_OBJS) -o $@
+
+$(TEST_EXE): $(TEST_OBJS) $(LIB_OBJS)
+	$(CXX) $(TEST_OBJS) $(LIB_OBJS) -o $@
 
 $(BUILD)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
--include $(OBJS:.o=.d)
+-include $(APP_OBJS:.o=.d) $(TEST_OBJS:.o=.d)
