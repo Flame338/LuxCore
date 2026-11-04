@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -44,6 +45,38 @@ void index_samples(Indexer& indexer) {
     indexer.add_document(3, "Lorem Epsum", "Edgerunners 2 was a great show. Must watch.");
 }
 
+constexpr std::string_view type_command = ":type ";
+constexpr int keystroke_hits = 3;
+
+bool is_utf8_continuation(char c) {
+    return (static_cast<unsigned char>(c) & 0xC0) == 0x80;
+}
+
+void print_hits(const Indexer& indexer, const std::vector<SearchHit>& hits) {
+    if (hits.empty()) {
+        std::cout << "No results\n";
+    }
+    for (const SearchHit& hit : hits) {
+        std::cout << "  doc " << hit.doc_id << "  score " << hit.score << "  "
+                  << indexer.get_document(hit.doc_id).title << "\n";
+    }
+}
+
+void replay_typing(const Indexer& indexer, const Searcher& searcher, const std::string& text) {
+    for (std::size_t typed = 1; typed <= text.size(); typed++) {
+        if (typed < text.size() && is_utf8_continuation(text[typed])) {
+            continue;
+        }
+        const std::string so_far = text.substr(0, typed);
+        std::cout << "  " << so_far << "  ->";
+        const std::vector<SearchHit> hits = searcher.search(so_far, keystroke_hits);
+        for (std::size_t i = 0; i < hits.size(); i++) {
+            std::cout << (i == 0 ? " " : " | ") << indexer.get_document(hits[i].doc_id).title;
+        }
+        std::cout << "\n";
+    }
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -74,13 +107,10 @@ int main(int argc, char** argv) {
 
     std::string query;
     while (std::getline(std::cin, query) && !query.empty()) {
-        std::vector<SearchHit> hits = searcher.search(query);
-        if (hits.empty()) {
-            std::cout << "No results\n";
-        }
-        for (const SearchHit& hit : hits) {
-            std::cout << "  doc " << hit.doc_id << "  score " << hit.score << "  "
-                      << indexer.get_document(hit.doc_id).title << "\n";
+        if (query.starts_with(type_command)) {
+            replay_typing(indexer, searcher, query.substr(type_command.size()));
+        } else {
+            print_hits(indexer, searcher.search(query));
         }
         std::cout << "> ";
     }
