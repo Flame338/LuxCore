@@ -15,6 +15,30 @@ std::vector<std::string> Analyzer::analyze(const std::string& text) const {
     return tokens;
 }
 
+AnalyzedQuery Analyzer::analyze_query(const std::string& text) const {
+    std::vector<std::string> tokens = tokenizer->tokenize(text);
+    const bool ends_inside_word = tokenizer->tokenize(text + 'x').size() == tokens.size();
+
+    std::vector<std::string> open_word;
+    if (ends_inside_word) {
+        open_word.push_back(std::move(tokens.back()));
+        tokens.pop_back();
+    }
+
+    for (const auto& filter : filters) {
+        filter->apply(tokens);
+        if (filter->applies_to_partial_words()) {
+            filter->apply(open_word);
+        }
+    }
+
+    AnalyzedQuery query{std::move(tokens), std::nullopt};
+    if (!open_word.empty()) {
+        query.prefix = std::move(open_word.front());
+    }
+    return query;
+}
+
 Analyzer make_standard_analyzer(const std::string& stop_words_path) {
     Analyzer analyzer(std::make_unique<StandardTokenizer>());
     analyzer.add_filter(std::make_unique<LowercaseFilter>());

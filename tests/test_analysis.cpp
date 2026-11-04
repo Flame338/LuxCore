@@ -92,6 +92,12 @@ std::string analyzed(const std::string& text) {
     return join(analyzer.analyze(text));
 }
 
+std::string query_of(const std::string& text) {
+    static const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const AnalyzedQuery query = analyzer.analyze_query(text);
+    return join(query.terms) + (query.prefix ? " prefix=" + *query.prefix : " prefix=none");
+}
+
 }
 
 TEST(tokenizer_splits_on_non_alphanumerics_and_keeps_case) {
@@ -190,6 +196,90 @@ TEST(analyzer_agrees_with_an_independent_implementation_on_random_text) {
                 std::cout << "    analyze mismatch: got " << join(analyzer.analyze(text))
                           << " expected " << join(analyzer_oracle(text)) << "\n";
             }
+        }
+    }
+    CHECK_EQ(mismatches, 0);
+}
+
+TEST(analyze_query_treats_the_last_word_as_a_prefix_only_while_typing) {
+    CHECK_EQ(query_of("foo sear"), "[foo] prefix=sear");
+    CHECK_EQ(query_of("foo sear "), "[foo][sear] prefix=none");
+    CHECK_EQ(query_of("foo sear."), "[foo][sear] prefix=none");
+    CHECK_EQ(query_of("Foo SEAR"), "[foo] prefix=sear");
+}
+
+TEST(analyze_query_keeps_a_stop_word_being_typed) {
+    CHECK_EQ(query_of("the"), " prefix=the");
+    CHECK_EQ(query_of("it"), " prefix=it");
+    CHECK_EQ(query_of("search the"), "[search] prefix=the");
+    CHECK_EQ(query_of("the search"), " prefix=search");
+    CHECK_EQ(query_of("the "), " prefix=none");
+}
+
+TEST(analyze_query_handles_apostrophes_at_the_end_of_the_query) {
+    CHECK_EQ(query_of("john'"), " prefix=john");
+    CHECK_EQ(query_of("John" + CURLY), " prefix=john");
+    CHECK_EQ(query_of("John" + CURLY + "s"), " prefix=john");
+    CHECK_EQ(query_of("it's"), " prefix=it");
+    CHECK_EQ(query_of("don't"), " prefix=don't");
+    CHECK_EQ(query_of("foo '"), "[foo] prefix=none");
+}
+
+TEST(analyze_query_of_empty_or_blank_text_is_empty) {
+    CHECK_EQ(query_of(""), " prefix=none");
+    CHECK_EQ(query_of("   "), " prefix=none");
+    CHECK_EQ(query_of("..."), " prefix=none");
+}
+
+TEST(analyze_query_treats_a_non_ascii_byte_as_ending_the_word) {
+    CHECK_EQ(query_of("caf\xC3\xA9"), "[caf] prefix=none");
+}
+
+TEST(analyze_query_probe_agrees_with_a_trailing_space) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    std::mt19937 rng(4242);
+    int mismatches = 0;
+    for (int i = 0; i < 20000; i++) {
+        const std::string text = random_text(rng);
+        const AnalyzedQuery query = analyzer.analyze_query(text + " ");
+        if (query.terms != analyzer.analyze(text) || query.prefix) {
+            if (++mismatches <= 3) {
+                std::cout << "    analyze_query mismatch: got " << join(query.terms) << " for '"
+                          << text << " '\n";
+            }
+        }
+    }
+    CHECK_EQ(mismatches, 0);
+}
+
+TEST(tokenizer_appending_a_letter_extends_an_open_word_and_starts_a_new_one_otherwise) {
+    StandardTokenizer tokenizer;
+    CHECK_EQ(tokenizer.tokenize("searx").size(), tokenizer.tokenize("sear").size());
+    CHECK_EQ(tokenizer.tokenize("john'x").size(), tokenizer.tokenize("john'").size());
+    CHECK_EQ(tokenizer.tokenize("John" + CURLY + "x").size(), tokenizer.tokenize("John" + CURLY).size());
+    CHECK_EQ(tokenizer.tokenize("sear x").size(), tokenizer.tokenize("sear ").size() + 1);
+    CHECK_EQ(tokenizer.tokenize("foo 'x").size(), tokenizer.tokenize("foo '").size() + 1);
+    CHECK_EQ(tokenizer.tokenize("caf\xC3\xA9x").size(), tokenizer.tokenize("caf\xC3\xA9").size() + 1);
+    CHECK_EQ(tokenizer.tokenize("x").size(), tokenizer.tokenize("").size() + 1);
+}
+
+TEST(tokenizer_appending_a_letter_only_extends_the_last_token_on_random_text) {
+    StandardTokenizer tokenizer;
+    std::mt19937 rng(4242);
+    int mismatches = 0;
+    for (int i = 0; i < 20000; i++) {
+        const std::string text = random_text(rng);
+        const std::vector<std::string> tokens = tokenizer.tokenize(text);
+        const std::vector<std::string> probe = tokenizer.tokenize(text + "x");
+        bool consistent = false;
+        if (probe.size() == tokens.size() + 1) {
+            consistent = std::equal(tokens.begin(), tokens.end(), probe.begin());
+        } else if (probe.size() == tokens.size() && !tokens.empty()) {
+            consistent = std::equal(tokens.begin(), tokens.end() - 1, probe.begin()) &&
+                         probe.back().starts_with(tokens.back());
+        }
+        if (!consistent) {
+            mismatches++;
         }
     }
     CHECK_EQ(mismatches, 0);
