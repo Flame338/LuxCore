@@ -1,16 +1,37 @@
 #include <unordered_set>
+#include <fstream>
 #include <string>
 #include <iostream>
 #include <vector>
+#include <cctype>
+#include <algorithm>
 
 
 class Tokenizer {
     private:
         std::unordered_set<std::string> stop_words;
 
+        void load_stop_words(const std::string& filepath) {
+            std::ifstream file(filepath);
+            if (!file.is_open()) {
+                std::cerr << "Warning: Could not open stop word file: " << filepath << "\n";
+                return;
+            }
+
+            std::string word;
+            while (file >> word) {
+                std::transform(word.begin(), word.end(), word.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                });
+                stop_words.insert(word);
+            }
+        }
+
     public:
-        Tokenizer() {
-            stop_words = {"the", "is", "at", "which", "and", "a", "an", "in", "to", "of"};
+        Tokenizer(const std::string& stop_words_path) {
+            if (!stop_words_path.empty()) {
+                load_stop_words(stop_words_path);
+            }
         }
 
         std::vector<std::string> tokenize(const std::string& text) {
@@ -39,7 +60,7 @@ class Tokenizer {
 };
 
 int main() {
-    Tokenizer tokenizer;
+    Tokenizer tokenizer("stopwords.txt");
     std::string test = "The quick brown fox jumped over the brown bear!";
 
     std::vector<std::string> result = tokenizer.tokenize(test);
