@@ -16,6 +16,16 @@ public:
     void apply(std::vector<std::string>& tokens) const override;
 };
 
+class NormalizeApostropheFilter : public TokenFilter {
+public:
+    void apply(std::vector<std::string>& tokens) const override;
+};
+
+class EnglishPossessiveFilter : public TokenFilter {
+public:
+    void apply(std::vector<std::string>& tokens) const override;
+};
+
 class StopWordFilter : public TokenFilter {
 private:
     std::unordered_set<std::string> stop_words;

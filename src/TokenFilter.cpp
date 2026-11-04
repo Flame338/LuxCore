@@ -4,6 +4,7 @@
 #include <cctype>
 #include <fstream>
 #include <iostream>
+#include <string_view>
 
 namespace {
 
@@ -18,6 +19,25 @@ void to_lower(std::string& word) {
 void LowercaseFilter::apply(std::vector<std::string>& tokens) const {
     for (std::string& token : tokens) {
         to_lower(token);
+    }
+}
+
+void NormalizeApostropheFilter::apply(std::vector<std::string>& tokens) const {
+    constexpr std::string_view curly_apostrophe = "\xE2\x80\x99";
+
+    for (std::string& token : tokens) {
+        for (std::size_t pos = token.find(curly_apostrophe); pos != std::string::npos;
+             pos = token.find(curly_apostrophe, pos + 1)) {
+            token.replace(pos, curly_apostrophe.size(), "'");
+        }
+    }
+}
+
+void EnglishPossessiveFilter::apply(std::vector<std::string>& tokens) const {
+    for (std::string& token : tokens) {
+        if (token.size() > 2 && (token.ends_with("'s") || token.ends_with("'S"))) {
+            token.resize(token.size() - 2);
+        }
     }
 }
 

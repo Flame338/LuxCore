@@ -42,7 +42,7 @@ int main() {
     Indexer indexer("stopwords.txt");
 
     indexer.add_document(1, "Apache Lucene Overview", "LuxCore is a text search engine written in C++.");
-    indexer.add_document(2, "Writing Search Engines", "A custom search engine needs an inverted index written.");
+    indexer.add_document(2, "Writing Search Engines", "A custom search engine needs an inverted index.");
     indexer.add_document(3, "Lorem Epsum", "Edgerunners 2 was a great show. Must watch.");
 
     const InvertedIndex& index = indexer.get_index();
