@@ -15,7 +15,7 @@ std::vector<SearchHit> Searcher::search(const std::string& query_string, int top
         if (!postings) continue;
 
         int doc_freq = postings->size();
-        double idf = std::log(static_cast<double>(total_docs) / doc_freq);
+        double idf = std::log(static_cast<double>(total_docs + 1) / (doc_freq + 1)) + 1.0;
 
         for (const auto& posting : *postings) {
             double tf = static_cast<double>(posting.term_frequency);
@@ -29,7 +29,10 @@ std::vector<SearchHit> Searcher::search(const std::string& query_string, int top
     }
 
     std::sort(results.begin(), results.end(), [](const SearchHit& a, const SearchHit& b) {
-        return a.score > b.score;
+        if (a.score != b.score) {
+            return a.score > b.score;
+        }
+        return a.doc_id < b.doc_id;
     });
 
     if (results.size() > static_cast<size_t>(top_k)) {
