@@ -4,24 +4,24 @@
 #include <iostream>
 #include <unordered_map>
 #include <vector>
-#include "Tokenizer.h"
+#include "Analyzer.h"
 #include "Searcher.h"
 #include "InvertedIndex.h"
 
 class Indexer {
     private: 
-        Tokenizer tokenizer;
+        Analyzer analyzer;
         InvertedIndex inverted_index;
         std::unordered_map<int, Document> doc_store;
 
     public:
-        Indexer(const std::string& stop_words_path = "") : tokenizer(stop_words_path) {}
+        Indexer(const std::string& stop_words_path = "") : analyzer(make_standard_analyzer(stop_words_path)) {}
 
         void add_document(int id, const std::string& title, const std::string& body) {
             doc_store[id] = {id, title, body};
 
             std::string full_text = title + " " + body;
-            std::vector<std::string> tokens = tokenizer.tokenize(full_text);
+            std::vector<std::string> tokens = analyzer.analyze(full_text);
 
 
             std::unordered_map<std::string, int> term_freqs;
@@ -34,7 +34,7 @@ class Indexer {
 
         const InvertedIndex& get_index() const { return inverted_index; }
         const Document& get_document(int id) const { return doc_store.at(id); }
-        const Tokenizer& get_tokenizer() const { return tokenizer; }
+        const Analyzer& get_analyzer() const { return analyzer; }
         const std::unordered_map<int, Document>& get_doc_store() const { return doc_store; }
 };
 
@@ -42,14 +42,14 @@ int main() {
     Indexer indexer("stopwords.txt");
 
     indexer.add_document(1, "Apache Lucene Overview", "LuxCore is a text search engine written in C++.");
-    indexer.add_document(2, "Writing Search Engines", "A custom search engine needs an inverted index.");
+    indexer.add_document(2, "Writing Search Engines", "A custom search engine needs an inverted index written.");
     indexer.add_document(3, "Lorem Epsum", "Edgerunners 2 was a great show. Must watch.");
 
     const InvertedIndex& index = indexer.get_index();
     std::cout << "Documents: " << index.get_total_documents()
               << ", unique terms: " << index.get_unique_terms_count() << "\n";
 
-    Searcher searcher(index, indexer.get_tokenizer(), indexer.get_doc_store());
+    Searcher searcher(index, indexer.get_analyzer(), indexer.get_doc_store());
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Type a query and press Enter (empty line to quit)\n> ";

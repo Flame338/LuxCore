@@ -2,11 +2,11 @@
 #include <cmath>
 #include <algorithm>
 
-Searcher::Searcher(const InvertedIndex& index, const Tokenizer& tokenizer, const std::unordered_map<int, Document>& store)
-    : inverted_index(index), tokenizer(tokenizer), doc_store(store) {}
+Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer,const std::unordered_map<int, Document>& store)
+    : inverted_index(index), analyzer(analyzer), doc_store(store) {}
 
 std::vector<SearchHit> Searcher::search(const std::string& query_string, int top_k) const {
-    std::vector<std::string> query_tokens = tokenizer.tokenize(query_string);
+    std::vector<std::string> query_tokens = analyzer.analyze(query_string);
     std::unordered_map<int, double> doc_scores;
     int total_docs = inverted_index.get_total_documents();
 

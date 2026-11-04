@@ -1,17 +1,16 @@
 #pragma once
 
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 class Tokenizer {
-private:
-    std::unordered_set<std::string> stop_words;
-
-    void load_stop_words(const std::string& filepath);
-
 public:
-    explicit Tokenizer(const std::string& stop_words_path = "");
+    virtual ~Tokenizer() = default;
 
-    std::vector<std::string> tokenize(const std::string& text) const;
+    virtual std::vector<std::string> tokenize(const std::string& text) const = 0;
+};
+
+class StandardTokenizer : public Tokenizer {
+public:
+    std::vector<std::string> tokenize(const std::string& text) const override;
 };
