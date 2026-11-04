@@ -2,6 +2,7 @@
 
 #include "InvertedIndex.h"
 #include "Analyzer.h"
+#include "Document.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -10,12 +11,6 @@
 struct SearchHit {
     int doc_id;
     double score;
-};
-
-struct Document {
-    int id;
-    std::string title;
-    std::string body;
 };
 
 class Searcher {

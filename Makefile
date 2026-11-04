@@ -25,7 +25,7 @@ release:
 	$(MAKE) MODE=release
 
 run: $(EXE)
-	./$(EXE)
+	./$(EXE) $(ARGS)
 
 test: $(TEST_EXE)
 	./$(TEST_EXE) $(T)

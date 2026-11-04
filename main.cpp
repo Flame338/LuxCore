@@ -1,49 +1,67 @@
+#include "Indexer.h"
+#include "Searcher.h"
+
+#include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <string>
 #include <iostream>
-#include <unordered_map>
+#include <sstream>
+#include <string>
 #include <vector>
-#include "Analyzer.h"
-#include "Searcher.h"
-#include "InvertedIndex.h"
 
-class Indexer {
-    private: 
-        Analyzer analyzer;
-        InvertedIndex inverted_index;
-        std::unordered_map<int, Document> doc_store;
+namespace {
 
-    public:
-        Indexer(const std::string& stop_words_path = "") : analyzer(make_standard_analyzer(stop_words_path)) {}
-
-        void add_document(int id, const std::string& title, const std::string& body) {
-            doc_store[id] = {id, title, body};
-
-            std::string full_text = title + " " + body;
-            std::vector<std::string> tokens = analyzer.analyze(full_text);
-
-
-            std::unordered_map<std::string, int> term_freqs;
-            for (const auto& token : tokens) {
-                term_freqs[token]++;
-            }
-
-            inverted_index.add_document(id, term_freqs);
+std::vector<std::filesystem::path> find_text_files(const std::filesystem::path& folder) {
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".txt") {
+            files.push_back(entry.path());
         }
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
 
-        const InvertedIndex& get_index() const { return inverted_index; }
-        const Document& get_document(int id) const { return doc_store.at(id); }
-        const Analyzer& get_analyzer() const { return analyzer; }
-        const std::unordered_map<int, Document>& get_doc_store() const { return doc_store; }
-};
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
 
-int main() {
-    Indexer indexer("stopwords.txt");
+int index_folder(Indexer& indexer, const std::filesystem::path& folder) {
+    int id = 0;
+    for (const std::filesystem::path& path : find_text_files(folder)) {
+        indexer.add_document(++id, path.stem().string(), read_file(path));
+    }
+    return id;
+}
 
+void index_samples(Indexer& indexer) {
     indexer.add_document(1, "Apache Lucene Overview", "LuxCore is a text search engine written in C++.");
     indexer.add_document(2, "Writing Search Engines", "A custom search engine needs an inverted index.");
     indexer.add_document(3, "Lorem Epsum", "Edgerunners 2 was a great show. Must watch.");
+}
+
+}
+
+int main(int argc, char** argv) {
+    Indexer indexer("stopwords.txt");
+
+    if (argc > 1) {
+        const std::filesystem::path folder = argv[1];
+        if (!std::filesystem::is_directory(folder)) {
+            std::cerr << "Not a folder: " << folder.string() << "\n";
+            return 1;
+        }
+        if (index_folder(indexer, folder) == 0) {
+            std::cerr << "No .txt files found in " << folder.string() << "\n";
+            return 1;
+        }
+    } else {
+        index_samples(indexer);
+    }
 
     const InvertedIndex& index = indexer.get_index();
     std::cout << "Documents: " << index.get_total_documents()
