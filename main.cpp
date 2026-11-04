@@ -1,70 +1,12 @@
-#include "InvertedIndex.h"
-#include <unordered_set>
 #include <fstream>
+#include <iomanip>
 #include <string>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
-#include <cctype>
-#include <algorithm>
-
-
-class Tokenizer {
-    private:
-        std::unordered_set<std::string> stop_words;
-
-        void load_stop_words(const std::string& filepath) {
-            std::ifstream file(filepath);
-            if (!file.is_open()) {
-                std::cerr << "Warning: Could not open stop word file: " << filepath << "\n";
-                return;
-            }
-
-            std::string word;
-            while (file >> word) {
-                std::transform(word.begin(), word.end(), word.begin(), [](unsigned char c) {
-                    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                });
-                stop_words.insert(word);
-            }
-        }
-
-    public:
-        Tokenizer(const std::string& stop_words_path = "") {
-            if (!stop_words_path.empty()) {
-                load_stop_words(stop_words_path);
-            }
-        }
-
-        std::vector<std::string> tokenize(const std::string& text) const {
-            std::vector<std::string> tokens;
-            std::string current_token = "";
-
-            for (char c : text) {
-                unsigned char u_c = static_cast<unsigned char>(c);
-                if (std::isalnum(u_c)) {
-                    current_token += static_cast<char>(std::tolower(u_c));
-                } else if (!current_token.empty()) {
-                    // Assigning non-alphanumeric character to act as delimiters
-                    if (stop_words.find(current_token) == stop_words.end()) {
-                        tokens.push_back(current_token);
-                    }
-                    current_token.clear();
-                }
-            }
-
-            if (!current_token.empty() && stop_words.find(current_token) == stop_words.end()) {
-                tokens.push_back(current_token);
-            }
-
-            return tokens;
-        }
-};
-
-struct Document {
-    int id;
-    std::string title;
-    std::string body;
-};
+#include "Tokenizer.h"
+#include "Searcher.h"
+#include "InvertedIndex.h"
 
 class Indexer {
     private: 
@@ -92,6 +34,8 @@ class Indexer {
 
         const InvertedIndex& get_index() const { return inverted_index; }
         const Document& get_document(int id) const { return doc_store.at(id); }
+        const Tokenizer& get_tokenizer() const { return tokenizer; }
+        const std::unordered_map<int, Document>& get_doc_store() const { return doc_store; }
 };
 
 int main() {
@@ -105,18 +49,22 @@ int main() {
     std::cout << "Documents: " << index.get_total_documents()
               << ", unique terms: " << index.get_unique_terms_count() << "\n";
 
-    for (const std::string term : {"search", "engine", "lucene", "the", "missing"}) {
-        std::cout << term << ":";
-        const std::vector<Posting>* postings = index.get_postings(term);
-        if (postings == nullptr) {
-            std::cout << " (no matches)";
-        } else {
-            for (const Posting& p : *postings) {
-                std::cout << " [doc " << p.doc_id << " \"" << indexer.get_document(p.doc_id).title
-                          << "\", tf " << p.term_frequency << "]";
-            }
+    Searcher searcher(index, indexer.get_tokenizer(), indexer.get_doc_store());
+
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "Type a query and press Enter (empty line to quit)\n> ";
+
+    std::string query;
+    while (std::getline(std::cin, query) && !query.empty()) {
+        std::vector<SearchHit> hits = searcher.search(query);
+        if (hits.empty()) {
+            std::cout << "No results\n";
         }
-        std::cout << "\n";
+        for (const SearchHit& hit : hits) {
+            std::cout << "  doc " << hit.doc_id << "  score " << hit.score << "  "
+                      << indexer.get_document(hit.doc_id).title << "\n";
+        }
+        std::cout << "> ";
     }
     return 0;
 }
