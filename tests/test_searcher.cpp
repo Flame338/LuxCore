@@ -1,6 +1,8 @@
 #include "TestFramework.h"
 
+#include "Indexer.h"
 #include "Searcher.h"
+#include "Utf8.h"
 
 #include <cmath>
 
@@ -29,6 +31,31 @@ struct Corpus {
         return Searcher(index, analyzer, store).suggest(query, limit);
     }
 };
+
+struct Engine {
+    Indexer indexer{"stopwords.txt"};
+
+    void add(int id, const std::string& title, const std::string& body) {
+        indexer.add_document(id, title, body);
+    }
+
+    std::vector<SearchHit> search(const std::string& query, int top_k = 10) const {
+        return Searcher(indexer.get_index(), indexer.get_analyzer(), indexer.get_doc_store())
+            .search(query, top_k);
+    }
+
+    std::vector<Suggestion> suggest(const std::string& query, std::size_t limit = 5) const {
+        return Searcher(indexer.get_index(), indexer.get_analyzer(), indexer.get_doc_store())
+            .suggest(query, limit);
+    }
+};
+
+std::string cyrillic_word(const std::string& stem, int id) {
+    std::string word = stem;
+    utf8::append(word, 0x430 + id / 10);
+    utf8::append(word, 0x430 + id % 10);
+    return word;
+}
 
 std::string suggestions_text(const std::vector<Suggestion>& suggestions) {
     std::string text;
@@ -369,4 +396,114 @@ TEST(suggest_completes_a_stop_word_being_typed) {
     corpus.add(1, "t", "theory");
 
     CHECK_EQ(suggestions_text(corpus.suggest("the")), "theory:1,");
+}
+
+TEST(searcher_finds_accented_text_by_its_plain_and_accented_forms) {
+    Engine engine;
+    engine.add(1, "Trip", "Café Münchën");
+    engine.add(2, "Other", "tea");
+
+    CHECK_EQ(ids_of(engine.search("cafe")), "[1]");
+    CHECK_EQ(ids_of(engine.search("CAFÉ")), "[1]");
+    CHECK_EQ(ids_of(engine.search("Café")), "[1]");
+    CHECK_EQ(ids_of(engine.search("munchen")), "[1]");
+    CHECK_EQ(ids_of(engine.search("MÜNCHËN")), "[1]");
+    CHECK_EQ(ids_of(engine.search("cafe\u0301")), "[1]");
+    CHECK_EQ(ids_of(engine.search("cafe munchen")), "[1]");
+    CHECK(engine.search("cafes").empty());
+}
+
+TEST(searcher_finds_accented_text_by_a_typed_prefix) {
+    Engine engine;
+    engine.add(1, "Trip", "Café Münchën");
+    engine.add(2, "Other", "tea");
+
+    CHECK_EQ(ids_of(engine.search("caf")), "[1]");
+    CHECK_EQ(ids_of(engine.search("CAF")), "[1]");
+    CHECK_EQ(ids_of(engine.search("Mün")), "[1]");
+    CHECK_EQ(ids_of(engine.search("cafe mun")), "[1]");
+    CHECK_EQ(suggestions_text(engine.suggest("caf")), "cafe:1,");
+}
+
+TEST(searcher_finds_decomposed_documents_by_composed_queries) {
+    Engine engine;
+    engine.add(1, "t", "re\u0301sume\u0301");
+
+    CHECK_EQ(ids_of(engine.search("résumé")), "[1]");
+    CHECK_EQ(ids_of(engine.search("RESUME")), "[1]");
+    CHECK_EQ(ids_of(engine.search("res")), "[1]");
+}
+
+TEST(searcher_finds_han_documents_by_the_word_or_by_one_character) {
+    Engine engine;
+    engine.add(1, "t", "東京");
+    engine.add(2, "t", "京都");
+    engine.add(3, "t", "大阪");
+
+    CHECK_EQ(ids_of(engine.search("東京")), "[1][2]");
+    CHECK_EQ(ids_of(engine.search("京")), "[1][2]");
+    CHECK_EQ(ids_of(engine.search("東")), "[1]");
+    CHECK_EQ(ids_of(engine.search("大阪")), "[3]");
+    CHECK_EQ(ids_of(engine.search("東京タワー")), "[1][2]");
+    CHECK(engine.search("名古屋").empty());
+}
+
+TEST(searcher_finds_cyrillic_documents_by_prefix_and_by_whole_word) {
+    Engine engine;
+    engine.add(1, "Город", "Москва столица");
+    engine.add(2, "Город", "Мурманск");
+
+    CHECK_EQ(ids_of(engine.search("москва")), "[1]");
+    CHECK_EQ(ids_of(engine.search("МОСКВА")), "[1]");
+    CHECK_EQ(ids_of(engine.search("МОСКВ")), "[1]");
+    CHECK_EQ(ids_of(engine.search("МОС")), "[1]");
+    CHECK_EQ(ids_of(engine.search("Мурм")), "[2]");
+    CHECK_EQ(suggestions_text(engine.suggest("МОС")), "москва:1,");
+}
+
+TEST(searcher_keeps_cyrillic_yo_distinct_from_ye) {
+    Engine engine;
+    engine.add(1, "t", "ёлка");
+    engine.add(2, "t", "елка");
+
+    CHECK_EQ(ids_of(engine.search("ёлка")), "[1]");
+    CHECK_EQ(ids_of(engine.search("ЕЛКА")), "[2]");
+}
+
+TEST(searcher_caps_a_two_letter_cyrillic_prefix_like_a_two_letter_ascii_one) {
+    Engine engine;
+    for (int id = 1; id <= 10; id++) {
+        engine.add(id, "t", cyrillic_word("ма", id));
+    }
+
+    CHECK_EQ(ids_of(engine.search("МА")), "[1][2][3][4]");
+    CHECK_EQ(ids_of(engine.search("ма")), "[1][2][3][4]");
+}
+
+TEST(searcher_expands_nothing_for_a_one_letter_cyrillic_prefix) {
+    Engine engine;
+    engine.add(1, "t", "мама");
+    engine.add(2, "t", "м");
+
+    CHECK_EQ(ids_of(engine.search("М")), "[2]");
+}
+
+TEST(searcher_allows_thirty_two_completions_for_a_three_letter_cyrillic_prefix) {
+    Engine engine;
+    for (int id = 1; id <= 40; id++) {
+        engine.add(id, "t", cyrillic_word("мак", id));
+    }
+
+    CHECK_EQ(engine.search("мак", 100).size(), static_cast<std::size_t>(32));
+}
+
+TEST(searcher_counts_a_folded_prefix_in_code_points) {
+    Engine engine;
+    const char* words[] = {"sea", "seal", "seat", "sec", "see", "seed", "seek", "sell", "send", "sent"};
+    for (int id = 1; id <= 10; id++) {
+        engine.add(id, "t", words[id - 1]);
+    }
+
+    CHECK_EQ(ids_of(engine.search("SÉ")), "[1][2][3][4]");
+    CHECK_EQ(ids_of(engine.search("Sé")), ids_of(engine.search("se")));
 }

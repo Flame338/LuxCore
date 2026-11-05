@@ -1,4 +1,5 @@
 #include "Searcher.h"
+#include "Utf8.h"
 #include <cmath>
 #include <algorithm>
 
@@ -34,7 +35,7 @@ double idf(int total_docs, std::size_t doc_freq) {
 PrefixExpansion expand(const InvertedIndex& index, const std::string& prefix) {
     PrefixExpansion expansion{index.get_postings(prefix), {}};
 
-    const std::size_t limit = max_completions(prefix.size());
+    const std::size_t limit = max_completions(utf8::count_code_points(prefix));
     if (limit == 0) {
         return expansion;
     }
