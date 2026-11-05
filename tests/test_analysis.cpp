@@ -1,8 +1,10 @@
 #include "TestFramework.h"
 
 #include "Analyzer.h"
+#include "Utf8.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <random>
 #include <regex>
@@ -123,6 +125,21 @@ std::string tokens_of(const std::string& text) {
 std::string analyzed(const std::string& text) {
     static const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
     return join(analyzer.analyze(text));
+}
+
+std::string folded(const std::string& token) {
+    std::vector<std::string> tokens{token};
+    UnicodeFoldingFilter().apply(tokens);
+    return join(tokens);
+}
+
+std::string with_stop_words_file(const std::string& contents, const std::string& text) {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "luxcore_unicode_stop_words.txt";
+    std::ofstream(path) << contents;
+    const std::string result = join(make_standard_analyzer(path.string()).analyze(text));
+    std::filesystem::remove(path);
+    return result;
 }
 
 std::string query_of(const std::string& text) {
@@ -273,6 +290,181 @@ TEST(tokenizer_agrees_with_a_regex_on_random_text) {
     CHECK_EQ(mismatches, 0);
 }
 
+TEST(folding_lowercases_and_strips_latin_diacritics) {
+    CHECK_EQ(folded("Café"), "[cafe]");
+    CHECK_EQ(folded("RÉSUMÉ"), "[resume]");
+    CHECK_EQ(folded("Ñandú"), "[nandu]");
+    CHECK_EQ(folded("Zażółć"), "[zazolc]");
+    CHECK_EQ(folded("gęślą"), "[gesla]");
+    CHECK_EQ(folded("ÀÁÂÃÄÅàáâãäå"), "[aaaaaaaaaaaa]");
+    CHECK_EQ(folded("Čeština Šíleně"), "[cestina silene]");
+}
+
+TEST(folding_expands_ligatures_and_special_letters) {
+    CHECK_EQ(folded("Straße"), "[strasse]");
+    CHECK_EQ(folded("æ"), "[ae]");
+    CHECK_EQ(folded("Æther"), "[aether]");
+    CHECK_EQ(folded("œuvre"), "[oeuvre]");
+    CHECK_EQ(folded("Œ"), "[oe]");
+    CHECK_EQ(folded("Ørsted"), "[orsted]");
+    CHECK_EQ(folded("ø"), "[o]");
+    CHECK_EQ(folded("Łódź"), "[lodz]");
+    CHECK_EQ(folded("ł"), "[l]");
+    CHECK_EQ(folded("Đurđa"), "[durda]");
+    CHECK_EQ(folded("đ"), "[d]");
+    CHECK_EQ(folded("ð"), "[d]");
+    CHECK_EQ(folded("Ð"), "[d]");
+    CHECK_EQ(folded("þ"), "[th]");
+    CHECK_EQ(folded("Þor"), "[thor]");
+    CHECK_EQ(folded("Ĳssel"), "[ijssel]");
+    CHECK_EQ(folded("İstanbul ışık"), "[istanbul isik]");
+    CHECK_EQ(folded("ſ"), "[s]");
+}
+
+TEST(folding_turns_every_latin_letter_in_the_supported_blocks_into_lowercase_ascii) {
+    int bad = 0;
+    for (char32_t code_point = 0xC0; code_point <= 0x17F; code_point++) {
+        if (code_point == 0xD7 || code_point == 0xF7) {
+            continue;
+        }
+        std::string token;
+        utf8::append(token, code_point);
+        std::vector<std::string> tokens{token};
+        UnicodeFoldingFilter().apply(tokens);
+        const bool ok = tokens.size() == 1 && !tokens[0].empty() &&
+                        std::ranges::all_of(tokens[0], [](char c) { return c >= 'a' && c <= 'z'; });
+        if (!ok) {
+            bad++;
+        }
+    }
+    CHECK_EQ(bad, 0);
+}
+
+TEST(folding_leaves_the_multiplication_and_division_signs_alone) {
+    CHECK_EQ(folded("a\xC3\x97" "b"), "[a\xC3\x97" "b]");
+    CHECK_EQ(folded("a\xC3\xB7" "b"), "[a\xC3\xB7" "b]");
+}
+
+TEST(folding_drops_combining_marks_so_nfc_and_nfd_agree) {
+    CHECK_EQ(folded("re\u0301sume\u0301"), "[resume]");
+    CHECK_EQ(folded("résumé"), "[resume]");
+    CHECK_EQ(folded("cafe\u0301"), folded("café"));
+    CHECK_EQ(folded("n\u0303"), "[n]");
+
+    int survivors = 0;
+    for (char32_t mark = 0x300; mark <= 0x36F; mark++) {
+        std::string token = "e";
+        utf8::append(token, mark);
+        std::vector<std::string> tokens{token};
+        UnicodeFoldingFilter().apply(tokens);
+        if (tokens != std::vector<std::string>{"e"}) {
+            survivors++;
+        }
+    }
+    CHECK_EQ(survivors, 0);
+}
+
+TEST(folding_lowercases_cyrillic_without_merging_letters) {
+    CHECK_EQ(folded("Москва"), "[москва]");
+    CHECK_EQ(folded("МОСКВА"), "[москва]");
+    CHECK_EQ(folded("ЁЖ"), "[ёж]");
+    CHECK_EQ(folded("ёж"), "[ёж]");
+    CHECK_EQ(folded("Єдність Ђ Ѝ"), "[єдність ђ ѝ]");
+    CHECK_EQ(folded("Ӂ Ԁ Ҋ Ӏ"), "[ӂ ԁ ҋ ӏ]");
+    CHECK_EQ(folded("Привет, МИР"), "[привет, мир]");
+}
+
+TEST(folding_lowercases_greek_and_strips_tonos_and_dialytika) {
+    CHECK_EQ(folded("ΑΘΗΝΑ"), "[αθηνα]");
+    CHECK_EQ(folded("Αθήνα"), "[αθηνα]");
+    CHECK_EQ(folded("ΟΔΟΣ"), "[οδοσ]");
+    CHECK_EQ(folded("οδός"), "[οδοσ]");
+    CHECK_EQ(folded("ς"), "[σ]");
+    CHECK_EQ(folded("ά έ ή ί ό ύ ώ"), "[α ε η ι ο υ ω]");
+    CHECK_EQ(folded("Ά Έ Ή Ί Ό Ύ Ώ"), "[α ε η ι ο υ ω]");
+    CHECK_EQ(folded("ΐ ϊ Ϊ"), "[ι ι ι]");
+    CHECK_EQ(folded("ΰ ϋ Ϋ"), "[υ υ υ]");
+    CHECK_EQ(folded("ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ"), "[αβγδεζηθικλμνξοπρστυφχψω]");
+}
+
+TEST(folding_leaves_other_scripts_alone) {
+    CHECK_EQ(folded("東京"), "[東京]");
+    CHECK_EQ(folded("カタカナ"), "[カタカナ]");
+    CHECK_EQ(folded("한국어"), "[한국어]");
+    CHECK_EQ(folded("שלום"), "[שלום]");
+    CHECK_EQ(folded("مرحبا"), "[مرحبا]");
+}
+
+TEST(folding_lowercases_ascii_letters_next_to_non_ascii_ones_and_skips_pure_ascii_tokens) {
+    CHECK_EQ(folded("CAFÉ"), "[cafe]");
+    CHECK_EQ(folded("ABC"), "[ABC]");
+    CHECK_EQ(folded("abc123"), "[abc123]");
+    CHECK_EQ(folded("don't"), "[don't]");
+}
+
+TEST(folding_keeps_curly_apostrophes_and_bytes_it_does_not_know) {
+    CHECK_EQ(folded("L" + CURLY + "École"), "[l" + CURLY + "ecole]");
+    CHECK_EQ(folded("A\xC3"), "[a\xC3]");
+    CHECK_EQ(folded("\xFF" "A"), "[\xFF" "a]");
+}
+
+TEST(folding_removes_a_token_that_folds_to_nothing) {
+    CHECK_EQ(folded("\u0301"), "");
+    CHECK_EQ(folded("\u0301\u0302"), "");
+    CHECK_EQ(folded(""), "");
+
+    std::vector<std::string> tokens{"a", "\xCC\x81", "b"};
+    UnicodeFoldingFilter().apply(tokens);
+    CHECK_EQ(join(tokens), "[a][b]");
+}
+
+TEST(folding_is_idempotent_on_random_tokens) {
+    std::mt19937 rng(4242);
+    int mismatches = 0;
+    for (int i = 0; i < 20000; i++) {
+        std::vector<std::string> once = StandardTokenizer().tokenize(random_unicode_text(rng));
+        UnicodeFoldingFilter().apply(once);
+        std::vector<std::string> twice = once;
+        UnicodeFoldingFilter().apply(twice);
+        if (once != twice) {
+            mismatches++;
+        }
+    }
+    CHECK_EQ(mismatches, 0);
+}
+
+TEST(folding_applies_to_partial_words) {
+    CHECK(UnicodeFoldingFilter().applies_to_partial_words());
+}
+
+TEST(analyzer_folds_accents_ligatures_and_case_across_scripts) {
+    CHECK_EQ(analyzed("Café Müller"), "[cafe][muller]");
+    CHECK_EQ(analyzed("RÉSUMÉ"), "[resume]");
+    CHECK_EQ(analyzed("naïve Ñandú"), "[naive][nandu]");
+    CHECK_EQ(analyzed("Zażółć gęślą"), "[zazolc][gesla]");
+    CHECK_EQ(analyzed("Straße"), "[strasse]");
+    CHECK_EQ(analyzed("Москва ΑΘΗΝΑ"), "[москва][αθηνα]");
+    CHECK_EQ(analyzed("東京 カタカナ"), "[東][京][カタカナ]");
+}
+
+TEST(analyzer_gives_composed_and_decomposed_text_the_same_tokens) {
+    CHECK_EQ(analyzed("résumé"), analyzed("re\u0301sume\u0301"));
+    CHECK_EQ(analyzed("Crème Brûlée"), analyzed("Cre\u0300me Bru\u0302le\u0301e"));
+    CHECK_EQ(analyzed("résumé"), "[resume]");
+}
+
+TEST(analyzer_folds_before_the_possessive_and_apostrophe_filters) {
+    CHECK_EQ(analyzed("Zoë's book"), "[zoe][book]");
+    CHECK_EQ(analyzed("L" + CURLY + "École"), "[l'ecole]");
+}
+
+TEST(analyzer_stop_words_from_a_file_match_folded_tokens) {
+    CHECK_EQ(with_stop_words_file("Été\nдля\nτο\n", "été ETE Été summer для ДЛЯ το ΤΟ"), "[summer]");
+    CHECK_EQ(with_stop_words_file("e\u0301te\u0301\n", "été ete summer"), "[summer]");
+    CHECK_EQ(with_stop_words_file("café\nSTRASSE\n", "Café CAFE straße x"), "[x]");
+    CHECK_EQ(with_stop_words_file("\u0301\n", "a"), "[a]");
+}
+
 TEST(analyzer_lowercases_and_removes_stop_words) {
     CHECK_EQ(analyzed("The Quick brown FOX"), "[quick][brown][fox]");
     CHECK_EQ(analyzed("the and a of"), "");
@@ -353,9 +545,20 @@ TEST(analyze_query_of_empty_or_blank_text_is_empty) {
 }
 
 TEST(analyze_query_treats_a_trailing_non_ascii_letter_as_part_of_the_open_word) {
-    CHECK_EQ(query_of("caf\xC3\xA9"), " prefix=caf\xC3\xA9");
-    CHECK_EQ(query_of("foo caf\xC3\xA9"), "[foo] prefix=caf\xC3\xA9");
-    CHECK_EQ(query_of("caf\xC3\xA9 "), "[caf\xC3\xA9] prefix=none");
+    CHECK_EQ(query_of("caf\xC3\xA9"), " prefix=cafe");
+    CHECK_EQ(query_of("foo caf\xC3\xA9"), "[foo] prefix=cafe");
+    CHECK_EQ(query_of("caf\xC3\xA9 "), "[cafe] prefix=none");
+}
+
+TEST(analyze_query_folds_a_prefix_the_same_way_as_a_finished_word) {
+    CHECK_EQ(query_of("CAF"), " prefix=caf");
+    CHECK_EQ(query_of("Caf\xC3\x89"), " prefix=cafe");
+    CHECK_EQ(query_of("МОС"), " prefix=мос");
+    CHECK_EQ(query_of("ΑΘΗ"), " prefix=αθη");
+    CHECK_EQ(query_of("stra\xC3\x9F"), " prefix=strass");
+    CHECK_EQ(query_of("re\xCC\x81sume\xCC\x81"), " prefix=resume");
+    CHECK_EQ(query_of("cafe\xCC\x81"), " prefix=cafe");
+    CHECK_EQ(query_of("foo \xCC\x81"), "[foo] prefix=none");
 }
 
 TEST(analyze_query_treats_a_trailing_han_character_as_a_finished_word) {
