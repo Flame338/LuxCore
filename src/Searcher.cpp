@@ -12,8 +12,15 @@ struct PrefixExpansion {
 };
 
 struct PrefixTally {
+    int doc_id;
     int exact_tf = 0;
     int completion_tf = 0;
+};
+
+struct PostingCursor {
+    const Posting* at;
+    const Posting* end;
+    bool exact;
 };
 
 std::size_t max_completions(std::size_t prefix_length) {
@@ -54,29 +61,58 @@ PrefixExpansion expand(const InvertedIndex& index, const std::string& prefix) {
     return expansion;
 }
 
-void add_prefix_scores(const PrefixExpansion& expansion, int total_docs,
-                       std::unordered_map<int, double>& doc_scores) {
-    std::unordered_map<int, PrefixTally> tallies;
-    if (expansion.exact) {
-        for (const auto& posting : *expansion.exact) {
-            tallies[posting.doc_id].exact_tf += posting.term_frequency;
+std::vector<PrefixTally> merge_postings(const PrefixExpansion& expansion) {
+    std::vector<PostingCursor> cursors;
+    std::size_t total_postings = 0;
+    auto add_cursor = [&](const std::vector<Posting>& postings, bool exact) {
+        if (!postings.empty()) {
+            cursors.push_back({postings.data(), postings.data() + postings.size(), exact});
+            total_postings += postings.size();
         }
+    };
+    if (expansion.exact) {
+        add_cursor(*expansion.exact, true);
     }
     for (const TermPostings& completion : expansion.completions) {
-        for (const auto& posting : *completion.postings) {
-            tallies[posting.doc_id].completion_tf += posting.term_frequency;
-        }
+        add_cursor(*completion.postings, false);
     }
 
-    const double prefix_idf = idf(total_docs, tallies.size());
-    for (const auto& [doc_id, tally] : tallies) {
-        if (tally.exact_tf > 0) {
-            doc_scores[doc_id] += tally.exact_tf * prefix_idf;
+    const auto later = [](const PostingCursor& a, const PostingCursor& b) { return a.at->doc_id > b.at->doc_id; };
+    std::make_heap(cursors.begin(), cursors.end(), later);
+
+    std::vector<PrefixTally> tallies;
+    tallies.reserve(total_postings);
+    while (!cursors.empty()) {
+        std::pop_heap(cursors.begin(), cursors.end(), later);
+        PostingCursor& cursor = cursors.back();
+        if (tallies.empty() || tallies.back().doc_id != cursor.at->doc_id) {
+            tallies.push_back({cursor.at->doc_id});
+        }
+        (cursor.exact ? tallies.back().exact_tf : tallies.back().completion_tf) += cursor.at->term_frequency;
+        if (++cursor.at == cursor.end) {
+            cursors.pop_back();
         } else {
-            const double tf = tally.completion_tf;
-            doc_scores[doc_id] += completion_weight * tf / (tf + 1.0) * prefix_idf;
+            std::push_heap(cursors.begin(), cursors.end(), later);
         }
     }
+    return tallies;
+}
+
+std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total_docs) {
+    const std::vector<PrefixTally> tallies = merge_postings(expansion);
+    const double prefix_idf = idf(total_docs, tallies.size());
+
+    std::vector<SearchHit> hits;
+    hits.reserve(tallies.size());
+    for (const PrefixTally& tally : tallies) {
+        if (tally.exact_tf > 0) {
+            hits.push_back({tally.doc_id, tally.exact_tf * prefix_idf});
+        } else {
+            const double tf = tally.completion_tf;
+            hits.push_back({tally.doc_id, completion_weight * tf / (tf + 1.0) * prefix_idf});
+        }
+    }
+    return hits;
 }
 
 }
@@ -125,14 +161,20 @@ std::vector<SearchHit> Searcher::search(const std::string& query_string, int top
         }
     }
 
+    std::vector<SearchHit> results;
     if (query.prefix) {
-        add_prefix_scores(expand(inverted_index, *query.prefix), total_docs, doc_scores);
+        results = prefix_scores(expand(inverted_index, *query.prefix), total_docs);
     }
 
-    std::vector<SearchHit> results;
-    results.reserve(doc_scores.size());
-    for (const auto& [doc_id, score] : doc_scores) {
-        results.push_back({doc_id, score});
+    if (!doc_scores.empty()) {
+        for (const SearchHit& hit : results) {
+            doc_scores[hit.doc_id] += hit.score;
+        }
+        results.clear();
+        results.reserve(doc_scores.size());
+        for (const auto& [doc_id, score] : doc_scores) {
+            results.push_back({doc_id, score});
+        }
     }
 
     size_t keep = std::min(results.size(), static_cast<size_t>(top_k));
