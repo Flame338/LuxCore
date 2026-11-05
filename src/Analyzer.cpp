@@ -42,6 +42,7 @@ AnalyzedQuery Analyzer::analyze_query(const std::string& text) const {
 Analyzer make_standard_analyzer(const std::string& stop_words_path) {
     Analyzer analyzer(std::make_unique<StandardTokenizer>());
     analyzer.add_filter(std::make_unique<LowercaseFilter>());
+    analyzer.add_filter(std::make_unique<UnicodeFoldingFilter>());
     analyzer.add_filter(std::make_unique<NormalizeApostropheFilter>());
     analyzer.add_filter(std::make_unique<EnglishPossessiveFilter>());
     analyzer.add_filter(std::make_unique<StopWordFilter>(stop_words_path));

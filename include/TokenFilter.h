@@ -17,6 +17,11 @@ public:
     void apply(std::vector<std::string>& tokens) const override;
 };
 
+class UnicodeFoldingFilter : public TokenFilter {
+public:
+    void apply(std::vector<std::string>& tokens) const override;
+};
+
 class NormalizeApostropheFilter : public TokenFilter {
 public:
     void apply(std::vector<std::string>& tokens) const override;
