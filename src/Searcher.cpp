@@ -130,20 +130,20 @@ std::vector<SearchHit> Searcher::search(const std::string& query_string, int top
     }
 
     std::vector<SearchHit> results;
+    results.reserve(doc_scores.size());
     for (const auto& [doc_id, score] : doc_scores) {
         results.push_back({doc_id, score});
     }
 
-    std::sort(results.begin(), results.end(), [](const SearchHit& a, const SearchHit& b) {
+    size_t keep = std::min(results.size(), static_cast<size_t>(top_k));
+    std::partial_sort(results.begin(), results.begin() + keep, results.end(),
+                      [](const SearchHit& a, const SearchHit& b) {
         if (a.score != b.score) {
             return a.score > b.score;
         }
         return a.doc_id < b.doc_id;
     });
-
-    if (results.size() > static_cast<size_t>(top_k)) {
-        results.resize(top_k);
-    }
+    results.resize(keep);
 
     return results;
 }
