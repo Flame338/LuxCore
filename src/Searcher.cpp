@@ -17,12 +17,6 @@ struct PrefixTally {
     int completion_tf = 0;
 };
 
-struct PostingCursor {
-    const Posting* at;
-    const Posting* end;
-    bool exact;
-};
-
 std::size_t max_completions(std::size_t prefix_length) {
     if (prefix_length <= 1) {
         return 0;
@@ -61,40 +55,68 @@ PrefixExpansion expand(const InvertedIndex& index, const std::string& prefix) {
     return expansion;
 }
 
-std::vector<PrefixTally> merge_postings(const PrefixExpansion& expansion) {
-    std::vector<PostingCursor> cursors;
-    std::size_t total_postings = 0;
-    auto add_cursor = [&](const std::vector<Posting>& postings, bool exact) {
-        if (!postings.empty()) {
-            cursors.push_back({postings.data(), postings.data() + postings.size(), exact});
-            total_postings += postings.size();
+PrefixTally* merge_runs(const PrefixTally* a, const PrefixTally* a_end,
+                        const PrefixTally* b, const PrefixTally* b_end, PrefixTally* out) {
+    while (a != a_end && b != b_end) {
+        if (a->doc_id < b->doc_id) {
+            *out++ = *a++;
+        } else if (b->doc_id < a->doc_id) {
+            *out++ = *b++;
+        } else {
+            *out++ = {a->doc_id, a->exact_tf + b->exact_tf, a->completion_tf + b->completion_tf};
+            ++a;
+            ++b;
         }
+    }
+    out = std::copy(a, a_end, out);
+    return std::copy(b, b_end, out);
+}
+
+std::vector<PrefixTally> merge_postings(const PrefixExpansion& expansion) {
+    std::size_t total_postings = expansion.exact ? expansion.exact->size() : 0;
+    for (const TermPostings& completion : expansion.completions) {
+        total_postings += completion.postings->size();
+    }
+
+    std::vector<PrefixTally> tallies(total_postings);
+    std::vector<std::size_t> bounds{0};
+    auto add_run = [&](const std::vector<Posting>& postings, bool exact) {
+        if (postings.empty()) {
+            return;
+        }
+        PrefixTally* out = tallies.data() + bounds.back();
+        for (const Posting& posting : postings) {
+            *out++ = exact ? PrefixTally{posting.doc_id, posting.term_frequency, 0}
+                           : PrefixTally{posting.doc_id, 0, posting.term_frequency};
+        }
+        bounds.push_back(bounds.back() + postings.size());
     };
     if (expansion.exact) {
-        add_cursor(*expansion.exact, true);
+        add_run(*expansion.exact, true);
     }
     for (const TermPostings& completion : expansion.completions) {
-        add_cursor(*completion.postings, false);
+        add_run(*completion.postings, false);
     }
 
-    const auto later = [](const PostingCursor& a, const PostingCursor& b) { return a.at->doc_id > b.at->doc_id; };
-    std::make_heap(cursors.begin(), cursors.end(), later);
-
-    std::vector<PrefixTally> tallies;
-    tallies.reserve(total_postings);
-    while (!cursors.empty()) {
-        std::pop_heap(cursors.begin(), cursors.end(), later);
-        PostingCursor& cursor = cursors.back();
-        if (tallies.empty() || tallies.back().doc_id != cursor.at->doc_id) {
-            tallies.push_back({cursor.at->doc_id});
+    std::vector<PrefixTally> scratch(bounds.size() > 2 ? total_postings : 0);
+    std::vector<std::size_t> next_bounds;
+    while (bounds.size() > 2) {
+        next_bounds.assign(1, 0);
+        PrefixTally* out = scratch.data();
+        for (std::size_t run = 0; run + 1 < bounds.size(); run += 2) {
+            const PrefixTally* a = tallies.data() + bounds[run];
+            const PrefixTally* a_end = tallies.data() + bounds[run + 1];
+            if (run + 2 < bounds.size()) {
+                out = merge_runs(a, a_end, a_end, tallies.data() + bounds[run + 2], out);
+            } else {
+                out = std::copy(a, a_end, out);
+            }
+            next_bounds.push_back(out - scratch.data());
         }
-        (cursor.exact ? tallies.back().exact_tf : tallies.back().completion_tf) += cursor.at->term_frequency;
-        if (++cursor.at == cursor.end) {
-            cursors.pop_back();
-        } else {
-            std::push_heap(cursors.begin(), cursors.end(), later);
-        }
+        tallies.swap(scratch);
+        bounds.swap(next_bounds);
     }
+    tallies.resize(bounds.back());
     return tallies;
 }
 
