@@ -90,18 +90,19 @@ std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::
         return {};
     }
 
-    std::vector<Suggestion> suggestions;
-    for (const TermPostings& match : inverted_index.terms_with_prefix(*query.prefix)) {
-        suggestions.push_back({std::string(match.term), match.postings->size()});
-    }
-    std::sort(suggestions.begin(), suggestions.end(), [](const Suggestion& a, const Suggestion& b) {
-        if (a.doc_freq != b.doc_freq) {
-            return a.doc_freq > b.doc_freq;
+    std::vector<TermPostings> matches = inverted_index.terms_with_prefix(*query.prefix);
+    const auto kept = matches.begin() + std::min(limit, matches.size());
+    std::partial_sort(matches.begin(), kept, matches.end(), [](const TermPostings& a, const TermPostings& b) {
+        if (a.postings->size() != b.postings->size()) {
+            return a.postings->size() > b.postings->size();
         }
         return a.term < b.term;
     });
-    if (suggestions.size() > limit) {
-        suggestions.resize(limit);
+
+    std::vector<Suggestion> suggestions;
+    suggestions.reserve(kept - matches.begin());
+    for (auto it = matches.begin(); it != kept; ++it) {
+        suggestions.push_back({std::string(it->term), it->postings->size()});
     }
     return suggestions;
 }
