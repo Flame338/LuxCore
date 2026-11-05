@@ -84,6 +84,28 @@ void add_prefix_scores(const PrefixExpansion& expansion, int total_docs,
 Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer,const std::unordered_map<int, Document>& store)
     : inverted_index(index), analyzer(analyzer), doc_store(store) {}
 
+std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::size_t limit) const {
+    const AnalyzedQuery query = analyzer.analyze_query(query_string);
+    if (!query.prefix) {
+        return {};
+    }
+
+    std::vector<Suggestion> suggestions;
+    for (const TermPostings& match : inverted_index.terms_with_prefix(*query.prefix)) {
+        suggestions.push_back({std::string(match.term), match.postings->size()});
+    }
+    std::sort(suggestions.begin(), suggestions.end(), [](const Suggestion& a, const Suggestion& b) {
+        if (a.doc_freq != b.doc_freq) {
+            return a.doc_freq > b.doc_freq;
+        }
+        return a.term < b.term;
+    });
+    if (suggestions.size() > limit) {
+        suggestions.resize(limit);
+    }
+    return suggestions;
+}
+
 std::vector<SearchHit> Searcher::search(const std::string& query_string, int top_k) const {
     AnalyzedQuery query = analyzer.analyze_query(query_string);
     std::unordered_map<int, double> doc_scores;

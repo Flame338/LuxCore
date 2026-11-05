@@ -24,7 +24,19 @@ struct Corpus {
     std::vector<SearchHit> search(const std::string& query, int top_k = 10) const {
         return Searcher(index, analyzer, store).search(query, top_k);
     }
+
+    std::vector<Suggestion> suggest(const std::string& query, std::size_t limit = 5) const {
+        return Searcher(index, analyzer, store).suggest(query, limit);
+    }
 };
+
+std::string suggestions_text(const std::vector<Suggestion>& suggestions) {
+    std::string text;
+    for (const Suggestion& suggestion : suggestions) {
+        text += suggestion.term + ":" + std::to_string(suggestion.doc_freq) + ",";
+    }
+    return text;
+}
 
 std::string ids_of(const std::vector<SearchHit>& hits) {
     std::string text;
@@ -312,4 +324,49 @@ TEST(searcher_a_one_character_prefix_matches_only_an_exact_one_character_term) {
     corpus.add(2, "t", "sea");
 
     CHECK_EQ(ids_of(corpus.search("s")), "[1]");
+}
+
+TEST(suggest_lists_completions_by_document_frequency_then_term) {
+    Corpus corpus;
+    corpus.add(1, "t", "search");
+    corpus.add(2, "t", "search");
+    corpus.add(3, "t", "searching");
+    corpus.add(4, "t", "seared");
+    corpus.add(5, "t", "seared");
+
+    CHECK_EQ(suggestions_text(corpus.suggest("sear")), "search:2,seared:2,searching:1,");
+}
+
+TEST(suggest_includes_the_exact_term_among_the_completions) {
+    Corpus corpus;
+    corpus.add(1, "t", "search");
+    corpus.add(2, "t", "searching");
+
+    CHECK_EQ(suggestions_text(corpus.suggest("search")), "search:1,searching:1,");
+}
+
+TEST(suggest_returns_at_most_the_limit) {
+    Corpus corpus;
+    corpus.add(1, "t", "search");
+    corpus.add(2, "t", "search");
+    corpus.add(3, "t", "searching");
+    corpus.add(4, "t", "seared");
+
+    CHECK_EQ(suggestions_text(corpus.suggest("sear", 2)), "search:2,searching:1,");
+}
+
+TEST(suggest_is_empty_once_the_word_is_finished_or_the_query_is_empty) {
+    Corpus corpus;
+    corpus.add(1, "t", "search");
+
+    CHECK(corpus.suggest("sear ").empty());
+    CHECK(corpus.suggest("").empty());
+    CHECK(corpus.suggest("zzz").empty());
+}
+
+TEST(suggest_completes_a_stop_word_being_typed) {
+    Corpus corpus;
+    corpus.add(1, "t", "theory");
+
+    CHECK_EQ(suggestions_text(corpus.suggest("the")), "theory:1,");
 }

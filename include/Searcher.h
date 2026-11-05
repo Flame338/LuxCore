@@ -13,6 +13,11 @@ struct SearchHit {
     double score;
 };
 
+struct Suggestion {
+    std::string term;
+    std::size_t doc_freq;
+};
+
 class Searcher {
     private:
         const InvertedIndex& inverted_index;
@@ -23,4 +28,5 @@ class Searcher {
         explicit Searcher(const InvertedIndex& index, const Analyzer& analyzer,const std::unordered_map<int, Document>& store);
 
         std::vector<SearchHit> search(const std::string& query_string, int top_k = 10) const;
+        std::vector<Suggestion> suggest(const std::string& query_string, std::size_t limit = 5) const;
 };
