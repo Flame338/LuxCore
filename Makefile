@@ -12,6 +12,7 @@ ifeq ($(MODE),release)
 else
   CXXFLAGS += -O0 -g
 endif
+CXXFLAGS += $(EXTRA_CXXFLAGS)
 
 LIB_SRCS  := $(wildcard src/*.cpp src/*/*.cpp)
 TEST_SRCS := $(wildcard tests/*.cpp)
