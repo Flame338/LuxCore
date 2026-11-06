@@ -140,8 +140,8 @@ std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total
 
 }
 
-Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer,const std::unordered_map<int, Document>& store)
-    : inverted_index(index), analyzer(analyzer), doc_store(store) {}
+Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer)
+    : inverted_index(index), analyzer(analyzer) {}
 
 std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::size_t limit) const {
     const AnalyzedQuery query = analyzer.analyze_query(query_string);

@@ -11,11 +11,8 @@ namespace {
 struct Corpus {
     Analyzer analyzer = make_standard_analyzer("stopwords.txt");
     InvertedIndex index;
-    std::unordered_map<int, Document> store;
 
     void add(int id, const std::string& title, const std::string& body) {
-        store[id] = {id, title, body};
-
         std::unordered_map<std::string, int> term_freqs;
         for (const std::string& token : analyzer.analyze(title + " " + body)) {
             term_freqs[token]++;
@@ -24,29 +21,27 @@ struct Corpus {
     }
 
     std::vector<SearchHit> search(const std::string& query, int top_k = 10) const {
-        return Searcher(index, analyzer, store).search(query, top_k);
+        return Searcher(index, analyzer).search(query, top_k);
     }
 
     std::vector<Suggestion> suggest(const std::string& query, std::size_t limit = 5) const {
-        return Searcher(index, analyzer, store).suggest(query, limit);
+        return Searcher(index, analyzer).suggest(query, limit);
     }
 };
 
 struct Engine {
     Indexer indexer{"stopwords.txt"};
 
-    void add(int id, const std::string& title, const std::string& body) {
-        indexer.add_document(id, title, body);
+    void add(const std::string& title, const std::string& body) {
+        indexer.add_document(make_text_document(title, body));
     }
 
     std::vector<SearchHit> search(const std::string& query, int top_k = 10) const {
-        return Searcher(indexer.get_index(), indexer.get_analyzer(), indexer.get_doc_store())
-            .search(query, top_k);
+        return Searcher(indexer.get_index(), indexer.get_analyzer()).search(query, top_k);
     }
 
     std::vector<Suggestion> suggest(const std::string& query, std::size_t limit = 5) const {
-        return Searcher(indexer.get_index(), indexer.get_analyzer(), indexer.get_doc_store())
-            .suggest(query, limit);
+        return Searcher(indexer.get_index(), indexer.get_analyzer()).suggest(query, limit);
     }
 };
 
@@ -400,98 +395,98 @@ TEST(suggest_completes_a_stop_word_being_typed) {
 
 TEST(searcher_finds_accented_text_by_its_plain_and_accented_forms) {
     Engine engine;
-    engine.add(1, "Trip", "Café Münchën");
-    engine.add(2, "Other", "tea");
+    engine.add("Trip", "Café Münchën");
+    engine.add("Other", "tea");
 
-    CHECK_EQ(ids_of(engine.search("cafe")), "[1]");
-    CHECK_EQ(ids_of(engine.search("CAFÉ")), "[1]");
-    CHECK_EQ(ids_of(engine.search("Café")), "[1]");
-    CHECK_EQ(ids_of(engine.search("munchen")), "[1]");
-    CHECK_EQ(ids_of(engine.search("MÜNCHËN")), "[1]");
-    CHECK_EQ(ids_of(engine.search("cafe\u0301")), "[1]");
-    CHECK_EQ(ids_of(engine.search("cafe munchen")), "[1]");
+    CHECK_EQ(ids_of(engine.search("cafe")), "[0]");
+    CHECK_EQ(ids_of(engine.search("CAFÉ")), "[0]");
+    CHECK_EQ(ids_of(engine.search("Café")), "[0]");
+    CHECK_EQ(ids_of(engine.search("munchen")), "[0]");
+    CHECK_EQ(ids_of(engine.search("MÜNCHËN")), "[0]");
+    CHECK_EQ(ids_of(engine.search("café")), "[0]");
+    CHECK_EQ(ids_of(engine.search("cafe munchen")), "[0]");
     CHECK(engine.search("cafes").empty());
 }
 
 TEST(searcher_finds_accented_text_by_a_typed_prefix) {
     Engine engine;
-    engine.add(1, "Trip", "Café Münchën");
-    engine.add(2, "Other", "tea");
+    engine.add("Trip", "Café Münchën");
+    engine.add("Other", "tea");
 
-    CHECK_EQ(ids_of(engine.search("caf")), "[1]");
-    CHECK_EQ(ids_of(engine.search("CAF")), "[1]");
-    CHECK_EQ(ids_of(engine.search("Mün")), "[1]");
-    CHECK_EQ(ids_of(engine.search("cafe mun")), "[1]");
+    CHECK_EQ(ids_of(engine.search("caf")), "[0]");
+    CHECK_EQ(ids_of(engine.search("CAF")), "[0]");
+    CHECK_EQ(ids_of(engine.search("Mün")), "[0]");
+    CHECK_EQ(ids_of(engine.search("cafe mun")), "[0]");
     CHECK_EQ(suggestions_text(engine.suggest("caf")), "cafe:1,");
 }
 
 TEST(searcher_finds_decomposed_documents_by_composed_queries) {
     Engine engine;
-    engine.add(1, "t", "re\u0301sume\u0301");
+    engine.add("t", "résumé");
 
-    CHECK_EQ(ids_of(engine.search("résumé")), "[1]");
-    CHECK_EQ(ids_of(engine.search("RESUME")), "[1]");
-    CHECK_EQ(ids_of(engine.search("res")), "[1]");
+    CHECK_EQ(ids_of(engine.search("résumé")), "[0]");
+    CHECK_EQ(ids_of(engine.search("RESUME")), "[0]");
+    CHECK_EQ(ids_of(engine.search("res")), "[0]");
 }
 
 TEST(searcher_finds_han_documents_by_the_word_or_by_one_character) {
     Engine engine;
-    engine.add(1, "t", "東京");
-    engine.add(2, "t", "京都");
-    engine.add(3, "t", "大阪");
+    engine.add("t", "東京");
+    engine.add("t", "京都");
+    engine.add("t", "大阪");
 
-    CHECK_EQ(ids_of(engine.search("東京")), "[1][2]");
-    CHECK_EQ(ids_of(engine.search("京")), "[1][2]");
-    CHECK_EQ(ids_of(engine.search("東")), "[1]");
-    CHECK_EQ(ids_of(engine.search("大阪")), "[3]");
-    CHECK_EQ(ids_of(engine.search("東京タワー")), "[1][2]");
+    CHECK_EQ(ids_of(engine.search("東京")), "[0][1]");
+    CHECK_EQ(ids_of(engine.search("京")), "[0][1]");
+    CHECK_EQ(ids_of(engine.search("東")), "[0]");
+    CHECK_EQ(ids_of(engine.search("大阪")), "[2]");
+    CHECK_EQ(ids_of(engine.search("東京タワー")), "[0][1]");
     CHECK(engine.search("名古屋").empty());
 }
 
 TEST(searcher_finds_cyrillic_documents_by_prefix_and_by_whole_word) {
     Engine engine;
-    engine.add(1, "Город", "Москва столица");
-    engine.add(2, "Город", "Мурманск");
+    engine.add("Город", "Москва столица");
+    engine.add("Город", "Мурманск");
 
-    CHECK_EQ(ids_of(engine.search("москва")), "[1]");
-    CHECK_EQ(ids_of(engine.search("МОСКВА")), "[1]");
-    CHECK_EQ(ids_of(engine.search("МОСКВ")), "[1]");
-    CHECK_EQ(ids_of(engine.search("МОС")), "[1]");
-    CHECK_EQ(ids_of(engine.search("Мурм")), "[2]");
+    CHECK_EQ(ids_of(engine.search("москва")), "[0]");
+    CHECK_EQ(ids_of(engine.search("МОСКВА")), "[0]");
+    CHECK_EQ(ids_of(engine.search("МОСКВ")), "[0]");
+    CHECK_EQ(ids_of(engine.search("МОС")), "[0]");
+    CHECK_EQ(ids_of(engine.search("Мурм")), "[1]");
     CHECK_EQ(suggestions_text(engine.suggest("МОС")), "москва:1,");
 }
 
 TEST(searcher_keeps_cyrillic_yo_distinct_from_ye) {
     Engine engine;
-    engine.add(1, "t", "ёлка");
-    engine.add(2, "t", "елка");
+    engine.add("t", "ёлка");
+    engine.add("t", "елка");
 
-    CHECK_EQ(ids_of(engine.search("ёлка")), "[1]");
-    CHECK_EQ(ids_of(engine.search("ЕЛКА")), "[2]");
+    CHECK_EQ(ids_of(engine.search("ёлка")), "[0]");
+    CHECK_EQ(ids_of(engine.search("ЕЛКА")), "[1]");
 }
 
 TEST(searcher_caps_a_two_letter_cyrillic_prefix_like_a_two_letter_ascii_one) {
     Engine engine;
-    for (int id = 1; id <= 10; id++) {
-        engine.add(id, "t", cyrillic_word("ма", id));
+    for (int n = 1; n <= 10; n++) {
+        engine.add("t", cyrillic_word("ма", n));
     }
 
-    CHECK_EQ(ids_of(engine.search("МА")), "[1][2][3][4]");
-    CHECK_EQ(ids_of(engine.search("ма")), "[1][2][3][4]");
+    CHECK_EQ(ids_of(engine.search("МА")), "[0][1][2][3]");
+    CHECK_EQ(ids_of(engine.search("ма")), "[0][1][2][3]");
 }
 
 TEST(searcher_expands_nothing_for_a_one_letter_cyrillic_prefix) {
     Engine engine;
-    engine.add(1, "t", "мама");
-    engine.add(2, "t", "м");
+    engine.add("t", "мама");
+    engine.add("t", "м");
 
-    CHECK_EQ(ids_of(engine.search("М")), "[2]");
+    CHECK_EQ(ids_of(engine.search("М")), "[1]");
 }
 
 TEST(searcher_allows_thirty_two_completions_for_a_three_letter_cyrillic_prefix) {
     Engine engine;
-    for (int id = 1; id <= 40; id++) {
-        engine.add(id, "t", cyrillic_word("мак", id));
+    for (int n = 1; n <= 40; n++) {
+        engine.add("t", cyrillic_word("мак", n));
     }
 
     CHECK_EQ(engine.search("мак", 100).size(), static_cast<std::size_t>(32));
@@ -500,10 +495,10 @@ TEST(searcher_allows_thirty_two_completions_for_a_three_letter_cyrillic_prefix) 
 TEST(searcher_counts_a_folded_prefix_in_code_points) {
     Engine engine;
     const char* words[] = {"sea", "seal", "seat", "sec", "see", "seed", "seek", "sell", "send", "sent"};
-    for (int id = 1; id <= 10; id++) {
-        engine.add(id, "t", words[id - 1]);
+    for (const char* word : words) {
+        engine.add("t", word);
     }
 
-    CHECK_EQ(ids_of(engine.search("SÉ")), "[1][2][3][4]");
+    CHECK_EQ(ids_of(engine.search("SÉ")), "[0][1][2][3]");
     CHECK_EQ(ids_of(engine.search("Sé")), ids_of(engine.search("se")));
 }

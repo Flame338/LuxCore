@@ -32,17 +32,23 @@ std::string read_file(const std::filesystem::path& path) {
 }
 
 int index_folder(Indexer& indexer, const std::filesystem::path& folder) {
-    int id = 0;
+    int count = 0;
     for (const std::filesystem::path& path : find_text_files(folder)) {
-        indexer.add_document(++id, path.stem().string(), read_file(path));
+        indexer.add_document(make_text_document(path.stem().string(), read_file(path)));
+        count++;
     }
-    return id;
+    return count;
 }
 
 void index_samples(Indexer& indexer) {
-    indexer.add_document(1, "Apache Lucene Overview", "LuxCore is a text search engine written in C++.");
-    indexer.add_document(2, "Writing Search Engines", "A custom search engine needs an inverted index.");
-    indexer.add_document(3, "Lorem Epsum", "Edgerunners 2 was a great show. Must watch.");
+    indexer.add_document(make_text_document("Apache Lucene Overview", "LuxCore is a text search engine written in C++."));
+    indexer.add_document(make_text_document("Writing Search Engines", "A custom search engine needs an inverted index."));
+    indexer.add_document(make_text_document("Lorem Epsum", "Edgerunners 2 was a great show. Must watch."));
+}
+
+std::string title_of(const Indexer& indexer, int doc_id) {
+    const Field* title = indexer.get_document(doc_id).find("title");
+    return title == nullptr ? std::string() : title->value;
 }
 
 constexpr std::string_view type_command = ":type ";
@@ -58,7 +64,7 @@ void print_hits(const Indexer& indexer, const std::vector<SearchHit>& hits) {
     }
     for (const SearchHit& hit : hits) {
         std::cout << "  doc " << hit.doc_id << "  score " << hit.score << "  "
-                  << indexer.get_document(hit.doc_id).title << "\n";
+                  << title_of(indexer, hit.doc_id) << "\n";
     }
 }
 
@@ -71,7 +77,7 @@ void replay_typing(const Indexer& indexer, const Searcher& searcher, const std::
         std::cout << "  " << so_far << "  ->";
         const std::vector<SearchHit> hits = searcher.search(so_far, keystroke_hits);
         for (std::size_t i = 0; i < hits.size(); i++) {
-            std::cout << (i == 0 ? " " : " | ") << indexer.get_document(hits[i].doc_id).title;
+            std::cout << (i == 0 ? " " : " | ") << title_of(indexer, hits[i].doc_id);
         }
         std::cout << "\n";
     }
@@ -100,7 +106,7 @@ int main(int argc, char** argv) {
     std::cout << "Documents: " << index.get_total_documents()
               << ", unique terms: " << index.get_unique_terms_count() << "\n";
 
-    Searcher searcher(index, indexer.get_analyzer(), indexer.get_doc_store());
+    Searcher searcher(index, indexer.get_analyzer());
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Type a query and press Enter (empty line to quit)\n> ";

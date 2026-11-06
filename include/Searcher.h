@@ -2,7 +2,6 @@
 
 #include "InvertedIndex.h"
 #include "Analyzer.h"
-#include "Document.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -22,10 +21,9 @@ class Searcher {
     private:
         const InvertedIndex& inverted_index;
         const Analyzer& analyzer;
-        const std::unordered_map<int, Document>& doc_store;
 
     public:
-        explicit Searcher(const InvertedIndex& index, const Analyzer& analyzer,const std::unordered_map<int, Document>& store);
+        explicit Searcher(const InvertedIndex& index, const Analyzer& analyzer);
 
         std::vector<SearchHit> search(const std::string& query_string, int top_k = 10) const;
         std::vector<Suggestion> suggest(const std::string& query_string, std::size_t limit = 5) const;
