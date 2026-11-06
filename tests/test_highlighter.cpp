@@ -3,9 +3,13 @@
 #include "Analyzer.h"
 #include "Highlighter.h"
 #include "IdentifierTokenizer.h"
+#include "Query.h"
+#include "QueryParser.h"
 #include "Utf8.h"
 
 #include <algorithm>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -50,6 +54,29 @@ std::string snippet_of(const std::string& text, const std::string& query, Highli
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
     return Highlighter(analyzer, std::move(options)).snippet(text, query);
 }
+
+std::string snippet_for_query(const std::string& text, const std::string& query_text,
+                              std::optional<std::string_view> field = std::nullopt,
+                              HighlightOptions options = {}) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const ParseResult parsed = QueryParser(analyzer).parse(query_text);
+    return Highlighter(analyzer, std::move(options)).snippet(text, *parsed.query, field);
+}
+
+std::string snippet_for_built_query(const std::string& text, const Query& query,
+                                    std::optional<std::string_view> field = std::nullopt) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    return Highlighter(analyzer).snippet(text, query, field);
+}
+
+std::unique_ptr<Query> term(const std::string& text, std::optional<std::string> field = std::nullopt) {
+    return std::make_unique<TermQuery>(text, std::move(field));
+}
+
+class UnknownQuery : public Query {
+public:
+    ScoredDocs execute(const QueryContext&) const override { return {}; }
+};
 
 }
 
@@ -247,4 +274,209 @@ TEST(highlight_document_overload_returns_empty_for_a_missing_field) {
     const Highlighter highlighter(analyzer);
     const Document document = make_text_document("Fox tales", "A quick brown fox");
     CHECK_EQ(highlighter.snippet(document, "summary", "fox "), "");
+}
+
+TEST(highlight_query_overloads_resolve_with_string_literals) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const Highlighter highlighter(analyzer);
+    const TermQuery query("fox");
+    const Document document = make_text_document("Fox tales", "A quick brown fox");
+    CHECK_EQ(highlighter.snippet("a fox runs", "fox "), "a <em>fox</em> runs");
+    CHECK_EQ(highlighter.snippet("a fox runs", query), "a <em>fox</em> runs");
+    CHECK_EQ(highlighter.snippet("a fox runs", query, "body"), "a <em>fox</em> runs");
+    CHECK_EQ(highlighter.snippet(document, "body", "fox "), "A quick brown <em>fox</em>");
+    CHECK_EQ(highlighter.snippet(document, "body", query), "A quick brown <em>fox</em>");
+}
+
+TEST(highlight_query_term_is_compared_as_an_index_term_without_analysis) {
+    CHECK_EQ(snippet_for_built_query("The Fox runs", TermQuery("fox")), "The <em>Fox</em> runs");
+    CHECK_EQ(snippet_for_built_query("The Fox runs", TermQuery("Fox")), "The Fox runs");
+}
+
+TEST(highlight_query_marks_a_parsed_term) {
+    CHECK_EQ(snippet_for_query("The quick brown fox", "fox"), "The quick brown <em>fox</em>");
+}
+
+TEST(highlight_query_does_not_mark_a_prefix_of_a_longer_word) {
+    CHECK_EQ(snippet_for_query("Searching is fun", "searc"), "Searching is fun");
+}
+
+TEST(highlight_query_marks_must_and_should_clauses) {
+    CHECK_EQ(snippet_for_query("a red fox met a bear", "+fox bear"),
+             "a red <em>fox</em> met a <em>bear</em>");
+    CHECK_EQ(snippet_for_query("a red fox met a bear", "fox AND bear"),
+             "a red <em>fox</em> met a <em>bear</em>");
+    CHECK_EQ(snippet_for_query("a red fox met a bear", "fox OR wolf"), "a red <em>fox</em> met a bear");
+}
+
+TEST(highlight_query_does_not_mark_a_must_not_term) {
+    CHECK_EQ(snippet_for_query("a red fox met a bear", "fox -bear"), "a red <em>fox</em> met a bear");
+    CHECK_EQ(snippet_for_query("a red fox met a bear", "fox NOT bear"), "a red <em>fox</em> met a bear");
+}
+
+TEST(highlight_query_skips_the_whole_subtree_of_a_must_not_clause) {
+    CHECK_EQ(snippet_for_query("fox bear wolf", "fox -(bear OR wolf)"), "<em>fox</em> bear wolf");
+
+    auto inner = std::make_unique<BooleanQuery>();
+    inner->add(Occur::Must, term("bear"));
+    inner->add(Occur::Should, term("wolf"));
+    BooleanQuery outer;
+    outer.add(Occur::Must, term("fox"));
+    outer.add(Occur::MustNot, std::move(inner));
+    CHECK_EQ(snippet_for_built_query("fox bear wolf", outer), "<em>fox</em> bear wolf");
+}
+
+TEST(highlight_query_marks_nested_groups) {
+    CHECK_EQ(snippet_for_query("alpha beta gamma delta", "(alpha OR delta) AND gamma"),
+             "<em>alpha</em> beta <em>gamma</em> <em>delta</em>");
+    CHECK_EQ(snippet_for_query("alpha beta gamma delta", "alpha AND (beta OR (gamma AND -delta))"),
+             "<em>alpha</em> <em>beta</em> <em>gamma</em> delta");
+}
+
+TEST(highlight_query_phrase_marks_only_complete_occurrences) {
+    CHECK_EQ(snippet_for_query("quick fox and quick brown fox and brown quick", "\"quick brown\""),
+             "quick fox and <em>quick</em> <em>brown</em> fox and brown quick");
+}
+
+TEST(highlight_query_phrase_marks_every_complete_occurrence) {
+    CHECK_EQ(snippet_for_query("quick brown and quick brown", "\"quick brown\""),
+             "<em>quick</em> <em>brown</em> and <em>quick</em> <em>brown</em>");
+}
+
+TEST(highlight_query_phrase_with_a_repeated_word_marks_each_word_once) {
+    CHECK_EQ(snippet_for_query("go go go now", "\"go go\"", std::nullopt, {.start_marker = "[", .end_marker = "]"}),
+             "[go] [go] [go] now");
+}
+
+TEST(highlight_query_phrase_keeps_the_gap_of_a_removed_stop_word) {
+    CHECK_EQ(snippet_for_query("A cat and hat on a mat", "\"cat of hat\""),
+             "A <em>cat</em> and <em>hat</em> on a mat");
+    CHECK_EQ(snippet_for_query("A cat hat on a mat", "\"cat of hat\""), "A cat hat on a mat");
+    CHECK_EQ(snippet_for_query("A cat on the hat", "\"cat of hat\""), "A cat on the hat");
+}
+
+TEST(highlight_query_phrase_built_by_hand_uses_its_relative_positions) {
+    const PhraseQuery spaced(std::vector<PhraseTerm>{{"quick", 3}, {"fox", 5}});
+    CHECK_EQ(snippet_for_built_query("a quick red fox", spaced), "a <em>quick</em> red <em>fox</em>");
+    CHECK_EQ(snippet_for_built_query("a quick fox", spaced), "a quick fox");
+}
+
+TEST(highlight_query_phrase_finds_a_term_among_tokens_sharing_a_position) {
+    const Analyzer analyzer = make_identifier_analyzer({.keep_original = true, .split_letters_digits = true});
+    const Highlighter highlighter(analyzer);
+    CHECK_EQ(highlighter.snippet("call getUserName now", PhraseQuery(std::vector<std::string>{"call", "get"})),
+             "<em>call</em> <em>get</em>UserName now");
+    CHECK_EQ(highlighter.snippet("call getUserName now", PhraseQuery(std::vector<std::string>{"call", "getusername"})),
+             "<em>call</em> <em>getUserName</em> now");
+    CHECK_EQ(highlighter.snippet("call getUserName now", PhraseQuery(std::vector<std::string>{"call", "user"})),
+             "call getUserName now");
+}
+
+TEST(highlight_query_window_prefers_a_complete_phrase_over_scattered_words) {
+    const std::string text =
+        "quick zz brown " + repeat("zz ", 100) + "quick brown " + repeat("zz ", 100);
+    const std::string snippet = snippet_for_query(text, "\"quick brown\"", std::nullopt, bracketed(40));
+    CHECK(snippet.find("[quick] [brown]") != std::string::npos);
+    CHECK(!snippet.starts_with("quick zz"));
+}
+
+TEST(highlight_query_phrase_counts_as_one_distinct_term_in_the_window_choice) {
+    const std::string text = "quick brown " + repeat("zz ", 100) + "fox bear " + repeat("zz ", 100);
+    const std::string snippet = snippet_for_query(text, "\"quick brown\" fox bear", std::nullopt, bracketed(40));
+    CHECK(snippet.find("[fox] [bear]") != std::string::npos);
+    CHECK(!snippet.starts_with("[quick]"));
+}
+
+TEST(highlight_query_field_scope_ignores_terms_of_another_field) {
+    CHECK_EQ(snippet_for_query("A quick fox", "title:fox", "body"), "A quick fox");
+    CHECK_EQ(snippet_for_query("A quick fox", "title:fox", "title"), "A quick <em>fox</em>");
+    CHECK_EQ(snippet_for_query("A quick brown fox", "body:\"quick brown\"", "title"), "A quick brown fox");
+    CHECK_EQ(snippet_for_query("A quick brown fox", "body:\"quick brown\"", "body"),
+             "A <em>quick</em> <em>brown</em> fox");
+}
+
+TEST(highlight_query_without_a_field_scope_counts_every_term) {
+    CHECK_EQ(snippet_for_query("A quick fox", "title:fox"), "A quick <em>fox</em>");
+    CHECK_EQ(snippet_for_query("A quick brown fox", "body:\"quick brown\""),
+             "A <em>quick</em> <em>brown</em> fox");
+}
+
+TEST(highlight_query_unscoped_terms_match_in_any_field) {
+    CHECK_EQ(snippet_for_query("A quick fox", "fox", "body"), "A quick <em>fox</em>");
+    CHECK_EQ(snippet_for_query("A quick fox", "fox", "title"), "A quick <em>fox</em>");
+}
+
+TEST(highlight_query_mixes_scoped_and_unscoped_terms) {
+    CHECK_EQ(snippet_for_query("red fox and blue bear", "title:fox bear", "body"),
+             "red fox and blue <em>bear</em>");
+    CHECK_EQ(snippet_for_query("red fox and blue bear", "title:fox bear", "title"),
+             "red <em>fox</em> and blue <em>bear</em>");
+}
+
+TEST(highlight_query_document_overload_scopes_to_the_named_field) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const Highlighter highlighter(analyzer);
+    const Document document = make_text_document("Fox tales", "A quick brown fox");
+    const ParseResult title_query = QueryParser(analyzer).parse("title:fox");
+    CHECK_EQ(highlighter.snippet(document, "title", *title_query.query), "<em>Fox</em> tales");
+    CHECK_EQ(highlighter.snippet(document, "body", *title_query.query), "A quick brown fox");
+
+    const ParseResult any_query = QueryParser(analyzer).parse("fox");
+    CHECK_EQ(highlighter.snippet(document, "title", *any_query.query), "<em>Fox</em> tales");
+    CHECK_EQ(highlighter.snippet(document, "body", *any_query.query), "A quick brown <em>fox</em>");
+}
+
+TEST(highlight_query_document_overload_returns_empty_for_a_missing_field) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const Highlighter highlighter(analyzer);
+    const Document document = make_text_document("Fox tales", "A quick brown fox");
+    const ParseResult parsed = QueryParser(analyzer).parse("fox");
+    CHECK_EQ(highlighter.snippet(document, "summary", *parsed.query), "");
+}
+
+TEST(highlight_query_follows_the_analyzer_for_accents) {
+    const std::string cafe_accented = "Caf" + E_ACUTE;
+    CHECK_EQ(snippet_for_query("A Cafe in town", cafe_accented), "A <em>Cafe</em> in town");
+    CHECK_EQ(snippet_for_query("A " + cafe_accented + " in town", cafe_accented),
+             "A <em>" + cafe_accented + "</em> in town");
+    CHECK_EQ(snippet_for_query("A " + cafe_accented + " in town", "cafe"),
+             "A <em>" + cafe_accented + "</em> in town");
+}
+
+TEST(highlight_query_marks_a_cjk_term_and_a_cjk_phrase) {
+    const std::string text = utf8_of(U"我住在东京很久了");
+    CHECK_EQ(snippet_for_query(text, utf8_of(U"京")),
+             utf8_of(U"我住在东") + "<em>" + utf8_of(U"京") + "</em>" + utf8_of(U"很久了"));
+    CHECK_EQ(snippet_for_query(text, utf8_of(U"东京")),
+             utf8_of(U"我住在") + "<em>" + utf8_of(U"东京") + "</em>" + utf8_of(U"很久了"));
+    CHECK_EQ(snippet_for_query(utf8_of(U"东西京"), utf8_of(U"东京")), utf8_of(U"东西京"));
+}
+
+TEST(highlight_query_empty_boolean_gives_the_unmarked_beginning) {
+    const BooleanQuery empty;
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const std::string text = "alpha beta gamma delta epsilon";
+    CHECK_EQ(Highlighter(analyzer).snippet(text, empty), text);
+    CHECK_EQ(Highlighter(analyzer, {.length = 12}).snippet(text, empty), "alpha beta g...");
+    CHECK_EQ(snippet_for_query(text, "", std::nullopt, {.length = 12}), "alpha beta g...");
+}
+
+TEST(highlight_query_with_only_must_not_clauses_marks_nothing) {
+    CHECK_EQ(snippet_for_query("a fox and a bear", "-bear"), "a fox and a bear");
+}
+
+TEST(highlight_query_of_an_unknown_kind_contributes_nothing) {
+    CHECK_EQ(snippet_for_built_query("a fox runs", UnknownQuery()), "a fox runs");
+
+    BooleanQuery mixed;
+    mixed.add(Occur::Must, std::make_unique<UnknownQuery>());
+    mixed.add(Occur::Should, term("fox"));
+    CHECK_EQ(snippet_for_built_query("a fox runs", mixed), "a <em>fox</em> runs");
+}
+
+TEST(highlight_query_and_string_paths_agree_on_a_plain_word) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const Highlighter highlighter(analyzer);
+    const ParseResult parsed = QueryParser(analyzer).parse("fox");
+    CHECK_EQ(highlighter.snippet("The Fox runs", *parsed.query), highlighter.snippet("The Fox runs", "fox "));
 }
