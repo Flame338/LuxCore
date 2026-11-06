@@ -13,11 +13,11 @@ struct Corpus {
     InvertedIndex index;
 
     void add(int id, const std::string& title, const std::string& body) {
-        std::unordered_map<std::string, int> term_freqs;
+        TermFreqs term_freqs;
         for (const std::string& token : analyzer.analyze(title + " " + body)) {
             term_freqs[token]++;
         }
-        index.add_document(id, term_freqs);
+        index.add_document(id, FieldTermFreqs{{"body", term_freqs}});
     }
 
     std::vector<SearchHit> search(const std::string& query, int top_k = 10) const {

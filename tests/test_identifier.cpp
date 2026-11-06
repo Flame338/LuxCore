@@ -39,12 +39,12 @@ struct CodeCorpus {
     explicit CodeCorpus(Analyzer analyzer) : analyzer(std::move(analyzer)) {}
 
     int add(const std::string& text) {
-        std::unordered_map<std::string, int> term_freqs;
+        TermFreqs term_freqs;
         for (const std::string& token : analyzer.analyze(text)) {
             term_freqs[token]++;
         }
         const int id = next_id++;
-        index.add_document(id, term_freqs);
+        index.add_document(id, FieldTermFreqs{{"body", term_freqs}});
         return id;
     }
 
