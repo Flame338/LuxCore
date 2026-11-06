@@ -8,31 +8,45 @@ Analyzer& Analyzer::add_filter(std::unique_ptr<TokenFilter> filter) {
 }
 
 std::vector<std::string> Analyzer::analyze(const std::string& text) const {
-    std::vector<std::string> tokens = tokenizer->tokenize(text);
+    return terms_of(analyze_tokens(text));
+}
+
+AnalyzedQuery Analyzer::analyze_query(const std::string& text) const {
+    AnalyzedTokenQuery query = analyze_query_tokens(text);
+
+    AnalyzedQuery result{terms_of(query.tokens), std::nullopt};
+    if (query.prefix) {
+        result.prefix = std::move(query.prefix->term);
+    }
+    return result;
+}
+
+std::vector<Token> Analyzer::analyze_tokens(const std::string& text) const {
+    std::vector<Token> tokens = tokenizer->tokenize_tokens(text);
     for (const auto& filter : filters) {
-        filter->apply(tokens);
+        filter->filter(tokens);
     }
     return tokens;
 }
 
-AnalyzedQuery Analyzer::analyze_query(const std::string& text) const {
-    std::vector<std::string> tokens = tokenizer->tokenize(text);
-    const bool ends_inside_word = tokenizer->tokenize(text + 'x').size() == tokens.size();
+AnalyzedTokenQuery Analyzer::analyze_query_tokens(const std::string& text) const {
+    std::vector<Token> tokens = tokenizer->tokenize_tokens(text);
+    const bool ends_inside_word = tokenizer->tokenize_tokens(text + 'x').size() == tokens.size();
 
-    std::vector<std::string> open_word;
+    std::vector<Token> open_word;
     if (ends_inside_word) {
         open_word.push_back(std::move(tokens.back()));
         tokens.pop_back();
     }
 
     for (const auto& filter : filters) {
-        filter->apply(tokens);
+        filter->filter(tokens);
         if (filter->applies_to_partial_words()) {
-            filter->apply(open_word);
+            filter->filter(open_word);
         }
     }
 
-    AnalyzedQuery query{std::move(tokens), std::nullopt};
+    AnalyzedTokenQuery query{std::move(tokens), std::nullopt};
     if (!open_word.empty()) {
         query.prefix = std::move(open_word.front());
     }

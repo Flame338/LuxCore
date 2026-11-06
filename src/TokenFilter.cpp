@@ -273,34 +273,46 @@ void fold(std::string& token) {
 
 }
 
-void LowercaseFilter::apply(std::vector<std::string>& tokens) const {
-    for (std::string& token : tokens) {
-        to_lower(token);
+void TokenFilter::apply(std::vector<std::string>& terms) const {
+    std::vector<Token> tokens;
+    tokens.reserve(terms.size());
+    for (std::size_t i = 0; i < terms.size(); i++) {
+        tokens.push_back({std::move(terms[i]), i, 0, 0});
+    }
+    filter(tokens);
+    terms = terms_of(tokens);
+}
+
+void LowercaseFilter::filter(std::vector<Token>& tokens) const {
+    for (Token& token : tokens) {
+        to_lower(token.term);
     }
 }
 
-void UnicodeFoldingFilter::apply(std::vector<std::string>& tokens) const {
-    for (std::string& token : tokens) {
-        fold(token);
+void UnicodeFoldingFilter::filter(std::vector<Token>& tokens) const {
+    for (Token& token : tokens) {
+        fold(token.term);
     }
-    std::erase_if(tokens, [](const std::string& token) { return token.empty(); });
+    std::erase_if(tokens, [](const Token& token) { return token.term.empty(); });
 }
 
-void NormalizeApostropheFilter::apply(std::vector<std::string>& tokens) const {
+void NormalizeApostropheFilter::filter(std::vector<Token>& tokens) const {
     constexpr std::string_view curly_apostrophe = "\xE2\x80\x99";
 
-    for (std::string& token : tokens) {
-        for (std::size_t pos = token.find(curly_apostrophe); pos != std::string::npos;
-             pos = token.find(curly_apostrophe, pos + 1)) {
-            token.replace(pos, curly_apostrophe.size(), "'");
+    for (Token& token : tokens) {
+        std::string& term = token.term;
+        for (std::size_t pos = term.find(curly_apostrophe); pos != std::string::npos;
+             pos = term.find(curly_apostrophe, pos + 1)) {
+            term.replace(pos, curly_apostrophe.size(), "'");
         }
     }
 }
 
-void EnglishPossessiveFilter::apply(std::vector<std::string>& tokens) const {
-    for (std::string& token : tokens) {
-        if (token.size() > 2 && (token.ends_with("'s") || token.ends_with("'S"))) {
-            token.resize(token.size() - 2);
+void EnglishPossessiveFilter::filter(std::vector<Token>& tokens) const {
+    for (Token& token : tokens) {
+        std::string& term = token.term;
+        if (term.size() > 2 && (term.ends_with("'s") || term.ends_with("'S"))) {
+            term.resize(term.size() - 2);
         }
     }
 }
@@ -326,6 +338,6 @@ StopWordFilter::StopWordFilter(const std::string& stop_words_path) {
     }
 }
 
-void StopWordFilter::apply(std::vector<std::string>& tokens) const {
-    std::erase_if(tokens, [this](const std::string& token) { return stop_words.contains(token); });
+void StopWordFilter::filter(std::vector<Token>& tokens) const {
+    std::erase_if(tokens, [this](const Token& token) { return stop_words.contains(token.term); });
 }

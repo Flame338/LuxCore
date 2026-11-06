@@ -13,6 +13,11 @@ struct AnalyzedQuery {
     std::optional<std::string> prefix;
 };
 
+struct AnalyzedTokenQuery {
+    std::vector<Token> tokens;
+    std::optional<Token> prefix;
+};
+
 class Analyzer {
 private:
     std::unique_ptr<Tokenizer> tokenizer;
@@ -25,6 +30,8 @@ public:
 
     std::vector<std::string> analyze(const std::string& text) const;
     AnalyzedQuery analyze_query(const std::string& text) const;
+    std::vector<Token> analyze_tokens(const std::string& text) const;
+    AnalyzedTokenQuery analyze_query_tokens(const std::string& text) const;
 };
 
 Analyzer make_standard_analyzer(const std::string& stop_words_path = "");
