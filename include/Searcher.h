@@ -3,6 +3,7 @@
 #include "InvertedIndex.h"
 #include "Analyzer.h"
 #include "DocumentKeys.h"
+#include "EditDistance.h"
 #include "Scoring.h"
 #include <iostream>
 #include <map>
@@ -16,8 +17,6 @@ struct Suggestion {
     std::string term;
     std::size_t doc_freq;
 };
-
-enum class Fuzziness { Off, On };
 
 class Searcher {
     private:

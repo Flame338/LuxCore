@@ -1,9 +1,11 @@
 #include "Highlighter.h"
 
+#include "EditDistance.h"
 #include "Utf8.h"
 
 #include <algorithm>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -28,24 +30,108 @@ struct Window {
     std::size_t end;
 };
 
-struct QueryTerms {
-    std::unordered_map<std::string, std::size_t> index_of;
-    std::string prefix;
-    std::size_t prefix_index = 0;
-    bool has_prefix = false;
+struct PrefixTarget {
+    std::string term;
+    std::size_t unit;
 };
 
-QueryTerms collect_query_terms(const AnalyzedTokenQuery& query) {
-    QueryTerms terms;
+struct FuzzyTarget {
+    std::string term;
+    std::size_t code_points;
+    std::size_t max_distance;
+    std::size_t unit;
+};
+
+struct PhraseTarget {
+    std::vector<PhraseTerm> terms;
+    std::size_t unit;
+};
+
+bool same_phrase(const std::vector<PhraseTerm>& a, const std::vector<PhraseTerm>& b) {
+    return std::ranges::equal(a, b, [](const PhraseTerm& left, const PhraseTerm& right) {
+        return left.term == right.term && left.position == right.position;
+    });
+}
+
+struct Targets {
+    std::unordered_map<std::string, std::size_t> exact;
+    std::optional<PrefixTarget> prefix;
+    std::vector<FuzzyTarget> fuzzy;
+    std::vector<PhraseTarget> phrases;
+    std::size_t unit_count = 0;
+
+    std::size_t exact_unit(const std::string& term) {
+        const auto [slot, inserted] = exact.try_emplace(term, unit_count);
+        if (inserted) {
+            unit_count++;
+        }
+        return slot->second;
+    }
+
+    void set_prefix(const std::string& term) {
+        const auto found = exact.find(term);
+        prefix = PrefixTarget{term, found != exact.end() ? found->second : unit_count++};
+    }
+
+    void add_fuzzy(const std::string& term, std::size_t unit) {
+        const std::size_t code_points = utf8::count_code_points(term);
+        const std::size_t max_distance = fuzzy_max_distance(code_points);
+        if (max_distance > 0) {
+            fuzzy.push_back({term, code_points, max_distance, unit});
+        }
+    }
+
+    void add_phrase(const std::vector<PhraseTerm>& terms) {
+        const bool known = std::ranges::any_of(
+            phrases, [&terms](const PhraseTarget& phrase) { return same_phrase(phrase.terms, terms); });
+        if (!terms.empty() && !known) {
+            phrases.push_back({terms, unit_count++});
+        }
+    }
+};
+
+Targets text_targets(const Analyzer& analyzer, const std::string& query_string, Fuzziness fuzziness) {
+    const AnalyzedTokenQuery query = analyzer.analyze_query_tokens(query_string);
+    Targets targets;
     for (const Token& token : query.tokens) {
-        terms.index_of.try_emplace(token.term, terms.index_of.size());
+        const bool repeated = targets.exact.contains(token.term);
+        const std::size_t unit = targets.exact_unit(token.term);
+        if (fuzziness == Fuzziness::On && !repeated) {
+            targets.add_fuzzy(token.term, unit);
+        }
     }
     if (query.prefix) {
-        terms.has_prefix = true;
-        terms.prefix = query.prefix->term;
-        terms.prefix_index = terms.index_of.try_emplace(terms.prefix, terms.index_of.size()).first->second;
+        targets.set_prefix(query.prefix->term);
     }
-    return terms;
+    return targets;
+}
+
+bool in_scope(const std::optional<std::string>& query_field, const std::optional<std::string_view>& field) {
+    return !field || !query_field || *query_field == *field;
+}
+
+void collect_targets(const Query& query, const std::optional<std::string_view>& field, Targets& targets) {
+    if (const auto* term = dynamic_cast<const TermQuery*>(&query)) {
+        if (in_scope(term->get_field(), field)) {
+            targets.exact_unit(term->get_term());
+        }
+    } else if (const auto* phrase = dynamic_cast<const PhraseQuery*>(&query)) {
+        if (in_scope(phrase->get_field(), field)) {
+            targets.add_phrase(phrase->get_terms());
+        }
+    } else if (const auto* boolean = dynamic_cast<const BooleanQuery*>(&query)) {
+        for (const BooleanClause& clause : boolean->get_clauses()) {
+            if (clause.occur != Occur::MustNot) {
+                collect_targets(*clause.query, field, targets);
+            }
+        }
+    }
+}
+
+Targets query_targets(const Query& query, const std::optional<std::string_view>& field) {
+    Targets targets;
+    collect_targets(query, field, targets);
+    return targets;
 }
 
 void assign_code_points(std::string_view text, std::vector<Match>& matches) {
@@ -61,23 +147,87 @@ void assign_code_points(std::string_view text, std::vector<Match>& matches) {
     }
 }
 
-std::vector<Match> find_matches(const Analyzer& analyzer, const std::string& text,
-                                const std::string& query_string) {
-    const QueryTerms terms = collect_query_terms(analyzer.analyze_query_tokens(query_string));
+using TokensAtPosition = std::unordered_map<std::size_t, std::vector<std::size_t>>;
 
+void add_phrase_matches(const std::vector<Token>& tokens, const TokensAtPosition& at_position,
+                        const PhraseTarget& phrase, std::vector<Match>& matches) {
+    std::vector<char> marked(tokens.size(), 0);
+    std::vector<std::size_t> occurrence;
+    for (std::size_t first = 0; first < tokens.size(); first++) {
+        if (tokens[first].term != phrase.terms.front().term) {
+            continue;
+        }
+        occurrence.assign(1, first);
+        for (std::size_t i = 1; i < phrase.terms.size(); i++) {
+            const auto found = at_position.find(tokens[first].position + phrase.terms[i].position);
+            const std::size_t before = occurrence.size();
+            if (found != at_position.end()) {
+                for (const std::size_t candidate : found->second) {
+                    if (tokens[candidate].term == phrase.terms[i].term) {
+                        occurrence.push_back(candidate);
+                    }
+                }
+            }
+            if (occurrence.size() == before) {
+                occurrence.clear();
+                break;
+            }
+        }
+        for (const std::size_t index : occurrence) {
+            if (!marked[index]) {
+                marked[index] = 1;
+                matches.push_back({tokens[index].start_offset, tokens[index].end_offset, phrase.unit});
+            }
+        }
+    }
+}
+
+std::optional<std::size_t> fuzzy_unit(const std::string& term, const std::vector<FuzzyTarget>& fuzzy) {
+    std::optional<std::size_t> unit;
+    if (fuzzy.empty()) {
+        return unit;
+    }
+    const std::size_t code_points = utf8::count_code_points(term);
+    std::size_t best = 0;
+    for (const FuzzyTarget& target : fuzzy) {
+        const std::size_t gap = code_points > target.code_points ? code_points - target.code_points
+                                                                 : target.code_points - code_points;
+        if (gap > target.max_distance) {
+            continue;
+        }
+        const std::size_t distance = edit_distance(term, target.term, target.max_distance);
+        if (distance <= target.max_distance && (!unit || distance < best)) {
+            unit = target.unit;
+            best = distance;
+        }
+    }
+    return unit;
+}
+
+std::vector<Match> find_matches(const std::vector<Token>& tokens, const Targets& targets) {
     std::vector<Match> matches;
-    for (const Token& token : analyzer.analyze_tokens(text)) {
-        const auto exact = terms.index_of.find(token.term);
-        if (exact != terms.index_of.end()) {
+    for (const Token& token : tokens) {
+        const auto exact = targets.exact.find(token.term);
+        if (exact != targets.exact.end()) {
             matches.push_back({token.start_offset, token.end_offset, exact->second});
-        } else if (terms.has_prefix && token.term.starts_with(terms.prefix)) {
-            matches.push_back({token.start_offset, token.end_offset, terms.prefix_index});
+        } else if (targets.prefix && token.term.starts_with(targets.prefix->term)) {
+            matches.push_back({token.start_offset, token.end_offset, targets.prefix->unit});
+        } else if (const std::optional<std::size_t> unit = fuzzy_unit(token.term, targets.fuzzy)) {
+            matches.push_back({token.start_offset, token.end_offset, *unit});
+        }
+    }
+    if (!targets.phrases.empty()) {
+        TokensAtPosition at_position;
+        for (std::size_t i = 0; i < tokens.size(); i++) {
+            at_position[tokens[i].position].push_back(i);
+        }
+        for (const PhraseTarget& phrase : targets.phrases) {
+            add_phrase_matches(tokens, at_position, phrase, matches);
         }
     }
     std::sort(matches.begin(), matches.end(), [](const Match& a, const Match& b) {
         return std::pair(a.start, a.end) < std::pair(b.start, b.end);
     });
-    assign_code_points(text, matches);
     return matches;
 }
 
@@ -196,25 +346,40 @@ std::string render(std::string_view text, const std::vector<Span>& spans, std::s
     return out;
 }
 
+std::string highlight(const Analyzer& analyzer, const HighlightOptions& options, const std::string& text,
+                      const Targets& targets) {
+    std::vector<Match> matches = find_matches(analyzer.analyze_tokens(text), targets);
+    assign_code_points(text, matches);
+
+    const std::size_t total = utf8::count_code_points(text);
+    const Window window = choose_window(matches, total, options.length);
+    const std::size_t window_begin = advance_code_points(text, 0, window.begin);
+    const std::size_t window_end = advance_code_points(text, window_begin, window.end - window.begin);
+
+    return render(text, merge_spans(matches, window_begin, window_end), window_begin, window_end, options);
+}
+
 }
 
 Highlighter::Highlighter(const Analyzer& analyzer, HighlightOptions options)
     : analyzer(analyzer), options(std::move(options)) {}
 
 std::string Highlighter::snippet(const std::string& stored_text, const std::string& query_string) const {
-    const std::vector<Match> matches = find_matches(analyzer, stored_text, query_string);
-
-    const std::size_t total = utf8::count_code_points(stored_text);
-    const Window window = choose_window(matches, total, options.length);
-    const std::size_t window_begin = advance_code_points(stored_text, 0, window.begin);
-    const std::size_t window_end = advance_code_points(stored_text, window_begin, window.end - window.begin);
-
-    return render(stored_text, merge_spans(matches, window_begin, window_end), window_begin, window_end,
-                  options);
+    return highlight(analyzer, options, stored_text, text_targets(analyzer, query_string, options.fuzziness));
 }
 
 std::string Highlighter::snippet(const Document& document, std::string_view field,
                                  const std::string& query_string) const {
     const Field* found = document.find(field);
     return found ? snippet(found->value, query_string) : std::string();
+}
+
+std::string Highlighter::snippet(const std::string& stored_text, const Query& query,
+                                 std::optional<std::string_view> field) const {
+    return highlight(analyzer, options, stored_text, query_targets(query, field));
+}
+
+std::string Highlighter::snippet(const Document& document, std::string_view field, const Query& query) const {
+    const Field* found = document.find(field);
+    return found ? snippet(found->value, query, field) : std::string();
 }

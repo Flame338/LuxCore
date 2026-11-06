@@ -4,6 +4,8 @@
 #include <string_view>
 #include <vector>
 
+enum class Fuzziness { Off, On };
+
 std::vector<char32_t> to_code_points(std::string_view text);
 
 std::size_t edit_distance(std::string_view a, std::string_view b);
