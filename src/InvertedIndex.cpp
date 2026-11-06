@@ -10,15 +10,17 @@ void insert_posting(std::vector<Posting>& postings, int doc_id, int freq) {
 }
 
 template <typename Map>
-void erase_posting(Map& map, const std::string& term, int doc_id) {
+bool erase_posting(Map& map, const std::string& term, int doc_id) {
     auto it = map.find(term);
     if (it == map.end()) {
-        return;
+        return false;
     }
     std::erase_if(it->second, [doc_id](const Posting& p) { return p.doc_id == doc_id; });
     if (it->second.empty()) {
         map.erase(it);
+        return true;
     }
+    return false;
 }
 
 template <typename Map>
@@ -58,7 +60,11 @@ void InvertedIndex::add_document(int doc_id, const FieldTermFreqs& field_term_fr
     }
 
     for (const auto& [term, freq] : merged) {
-        insert_posting(index[term], doc_id, freq);
+        std::vector<Posting>& postings = index[term];
+        if (postings.empty()) {
+            fuzzy.add(term);
+        }
+        insert_posting(postings, doc_id, freq);
     }
     total_documents++;
 }
@@ -73,7 +79,9 @@ void InvertedIndex::remove_document(int doc_id) {
         auto field_it = fields.find(entry.field);
         for (const std::string& term : entry.terms) {
             erase_posting(field_it->second.terms, term, doc_id);
-            erase_posting(index, term, doc_id);
+            if (erase_posting(index, term, doc_id)) {
+                fuzzy.remove(term);
+            }
         }
         if (auto length_it = field_it->second.lengths.find(doc_id); length_it != field_it->second.lengths.end()) {
             field_it->second.total_length -= length_it->second;

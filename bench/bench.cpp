@@ -27,6 +27,7 @@ struct Options {
     int passes = 7;
     int stop = 100;
     int removes = 1000;
+    int fuzzy = 0;
     std::uint64_t seed = 12345;
 };
 
@@ -244,6 +245,7 @@ Options parse(int argc, char** argv) {
         if (flag == "--passes") options.passes = static_cast<int>(value);
         if (flag == "--stop") options.stop = static_cast<int>(value);
         if (flag == "--removes") options.removes = static_cast<int>(value);
+        if (flag == "--fuzzy") options.fuzzy = static_cast<int>(value);
         if (flag == "--seed") options.seed = static_cast<std::uint64_t>(value);
     }
     return options;
@@ -273,7 +275,8 @@ int main(int argc, char** argv) {
 
     const std::vector<Keystroke> keystrokes = make_keystrokes(words, zipf, rng, options.queries, options.stop);
     const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                            &indexer.get_keys());
+                            &indexer.get_keys(), Scoring::tf_idf(),
+                            options.fuzzy ? Fuzziness::On : Fuzziness::Off);
 
     const Audit audit = audit_pass(searcher, keystrokes, options.docs);
 
@@ -307,6 +310,7 @@ int main(int argc, char** argv) {
     std::cout << "corpus docs=" << options.docs << " vocab=" << options.vocab << " stop=" << options.stop
               << " index_terms=" << indexer.get_index().get_unique_terms_count()
               << " build_ms=" << build_ms << "\n";
+    std::cout << "fuzzy=" << options.fuzzy << "\n";
     std::cout << "workload queries=" << options.queries << " keystrokes=" << keystrokes.size()
               << " passes=" << options.passes << " seed=" << options.seed << "\n";
     std::cout << "errors=" << audit.errors << "\n";

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FuzzyIndex.h"
+
 #include <cstddef>
 #include <functional>
 #include <map>
@@ -43,6 +45,7 @@ class InvertedIndex {
         };
 
         PostingMap index;
+        FuzzyIndex fuzzy;
         std::map<std::string, FieldIndex, std::less<>> fields;
         std::unordered_map<int, std::vector<IndexedField>> doc_fields;
         int total_documents = 0;
@@ -55,6 +58,10 @@ class InvertedIndex {
         std::vector<FieldPostings> get_field_postings(const std::string& term) const;
         std::vector<TermPostings> terms_with_prefix(std::string_view prefix) const;
         std::vector<TermPostings> terms_with_prefix(std::string_view field, std::string_view prefix) const;
+
+        std::vector<FuzzyMatch> fuzzy_terms(std::string_view term, std::size_t max_distance) const {
+            return fuzzy.candidates(term, max_distance);
+        }
 
         int get_total_documents() const { return total_documents; }
         int get_field_documents(std::string_view field) const;

@@ -47,6 +47,8 @@ class FieldBoosts {
 
 enum class Scorer { TfIdf, Bm25 };
 
+enum class Fuzziness { Off, On };
+
 struct Bm25Params {
     double k1 = 1.2;
     double b = 0.75;
@@ -67,6 +69,7 @@ class Searcher {
         FieldBoosts boosts;
         const DocumentKeys* keys;
         Scoring scoring;
+        Fuzziness fuzziness;
 
         std::vector<SearchHit> search_scoped(const std::string& query_string, std::optional<std::string_view> field,
                                              int top_k) const;
@@ -76,7 +79,7 @@ class Searcher {
     public:
         explicit Searcher(const InvertedIndex& index, const Analyzer& analyzer,
                           FieldBoosts boosts = FieldBoosts::standard(), const DocumentKeys* keys = nullptr,
-                          Scoring scoring = Scoring::tf_idf());
+                          Scoring scoring = Scoring::tf_idf(), Fuzziness fuzziness = Fuzziness::Off);
 
         std::vector<SearchHit> search(const std::string& query_string, int top_k = 10) const;
         std::vector<SearchHit> search_in(std::string_view field, const std::string& query_string, int top_k = 10) const;
