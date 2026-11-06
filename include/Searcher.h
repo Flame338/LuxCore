@@ -22,7 +22,7 @@ class Searcher {
     private:
         const InvertedIndex& inverted_index;
         const Analyzer& analyzer;
-        const std::unordered_map<int, Document>& doc_store;
+        [[maybe_unused]] const std::unordered_map<int, Document>& doc_store;
 
     public:
         explicit Searcher(const InvertedIndex& index, const Analyzer& analyzer,const std::unordered_map<int, Document>& store);
