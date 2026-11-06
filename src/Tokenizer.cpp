@@ -32,6 +32,7 @@ constexpr ClassRange class_ranges[] = {
     {0xE000, 0xF8FF, CharClass::separator},
     {0xF900, 0xFAFF, CharClass::standalone},
     {0xFE30, 0xFE6F, CharClass::separator},
+    {0xFEFF, 0xFEFF, CharClass::separator},
     {0xFF01, 0xFF0F, CharClass::separator},
     {0xFF1A, 0xFF20, CharClass::separator},
     {0xFF3B, 0xFF40, CharClass::separator},
