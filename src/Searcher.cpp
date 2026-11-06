@@ -177,8 +177,9 @@ std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total
 
 }
 
-Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer, FieldBoosts boosts)
-    : inverted_index(index), analyzer(analyzer), boosts(std::move(boosts)) {}
+Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer, FieldBoosts boosts,
+                   const DocumentKeys* keys)
+    : inverted_index(index), analyzer(analyzer), boosts(std::move(boosts)), keys(keys) {}
 
 std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::size_t limit) const {
     return suggest_scoped(query_string, std::nullopt, limit);
@@ -268,5 +269,10 @@ std::vector<SearchHit> Searcher::search_scoped(const std::string& query_string,
     });
     results.resize(keep);
 
+    if (keys) {
+        for (SearchHit& hit : results) {
+            hit.key = keys->key_of(hit.doc_id);
+        }
+    }
     return results;
 }

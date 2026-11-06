@@ -26,6 +26,7 @@ struct Options {
     int queries = 150;
     int passes = 7;
     int stop = 100;
+    int removes = 1000;
     std::uint64_t seed = 12345;
 };
 
@@ -116,7 +117,7 @@ void build_corpus(Indexer& indexer, const std::vector<std::string>& words,
     for (int i = 0; i < docs; i++) {
         const std::string title = sentence(words, zipf, rng, 2 + static_cast<int>(rng() % 3));
         const std::string body = sentence(words, zipf, rng, 20 + static_cast<int>(rng() % 21));
-        indexer.add_document(make_text_document(title, body));
+        indexer.add_document("doc-" + std::to_string(i), make_text_document(title, body));
     }
 }
 
@@ -202,7 +203,7 @@ Audit audit_pass(const Searcher& searcher, const std::vector<Keystroke>& keystro
         audit.mix(keystroke.text);
         for (std::size_t i = 0; i < hits.size(); i++) {
             const SearchHit& hit = hits[i];
-            if (hit.doc_id < 1 || hit.doc_id > docs || !std::isfinite(hit.score) || hit.score <= 0.0) {
+            if (hit.doc_id < 0 || hit.doc_id >= docs || hit.key.empty() || !std::isfinite(hit.score) || hit.score <= 0.0) {
                 audit.errors++;
             }
             if (i > 0 && (hits[i - 1].score < hit.score ||
@@ -219,6 +220,19 @@ Audit audit_pass(const Searcher& searcher, const std::vector<Keystroke>& keystro
     return audit;
 }
 
+std::vector<double> timed_removals(Indexer& indexer, int docs, int removes) {
+    std::vector<double> samples;
+    const int count = std::min(removes, docs);
+    for (int i = 0; i < count; i++) {
+        const int target = static_cast<int>(static_cast<long long>(i) * docs / count);
+        const std::string key = "doc-" + std::to_string(target);
+        const Clock::time_point start = Clock::now();
+        indexer.remove_document(key);
+        samples.push_back(microseconds(start, Clock::now()));
+    }
+    return samples;
+}
+
 Options parse(int argc, char** argv) {
     Options options;
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -229,6 +243,7 @@ Options parse(int argc, char** argv) {
         if (flag == "--queries") options.queries = static_cast<int>(value);
         if (flag == "--passes") options.passes = static_cast<int>(value);
         if (flag == "--stop") options.stop = static_cast<int>(value);
+        if (flag == "--removes") options.removes = static_cast<int>(value);
         if (flag == "--seed") options.seed = static_cast<std::uint64_t>(value);
     }
     return options;
@@ -257,7 +272,8 @@ int main(int argc, char** argv) {
     const double build_ms = microseconds(build_start, Clock::now()) / 1000.0;
 
     const std::vector<Keystroke> keystrokes = make_keystrokes(words, zipf, rng, options.queries, options.stop);
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer());
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
+                            &indexer.get_keys());
 
     const Audit audit = audit_pass(searcher, keystrokes, options.docs);
 
@@ -302,6 +318,16 @@ int main(int argc, char** argv) {
     std::cout << "pooled p50_us=" << percentile(totals, 0.50) << " p95_us=" << percentile(totals, 0.95)
               << " p99_us=" << percentile(totals, 0.99) << " max_us=" << percentile(totals, 1.0)
               << " mean_us=" << sum / static_cast<double>(pooled.size()) << "\n";
+    const std::vector<double> removals = timed_removals(indexer, options.docs, options.removes);
+    if (!removals.empty()) {
+        double removal_sum = 0.0;
+        for (double sample : removals) {
+            removal_sum += sample;
+        }
+        std::cout << "removal n=" << removals.size() << " mean_us=" << removal_sum / static_cast<double>(removals.size())
+                  << " p99_us=" << percentile(removals, 0.99) << " max_us=" << percentile(removals, 1.0)
+                  << " remaining=" << indexer.get_index().get_total_documents() << "\n";
+    }
     std::cout << "split search_p99_us=" << percentile(searches, 0.99)
               << " suggest_p99_us=" << percentile(suggests, 0.99) << "\n";
 

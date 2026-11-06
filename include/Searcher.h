@@ -2,6 +2,7 @@
 
 #include "InvertedIndex.h"
 #include "Analyzer.h"
+#include "DocumentKeys.h"
 #include <iostream>
 #include <map>
 #include <optional>
@@ -13,6 +14,7 @@
 struct SearchHit {
     int doc_id;
     double score;
+    std::string key = {};
 };
 
 struct Suggestion {
@@ -48,6 +50,7 @@ class Searcher {
         const InvertedIndex& inverted_index;
         const Analyzer& analyzer;
         FieldBoosts boosts;
+        const DocumentKeys* keys;
 
         std::vector<SearchHit> search_scoped(const std::string& query_string, std::optional<std::string_view> field,
                                              int top_k) const;
@@ -56,7 +59,7 @@ class Searcher {
 
     public:
         explicit Searcher(const InvertedIndex& index, const Analyzer& analyzer,
-                          FieldBoosts boosts = FieldBoosts::standard());
+                          FieldBoosts boosts = FieldBoosts::standard(), const DocumentKeys* keys = nullptr);
 
         std::vector<SearchHit> search(const std::string& query_string, int top_k = 10) const;
         std::vector<SearchHit> search_in(std::string_view field, const std::string& query_string, int top_k = 10) const;
