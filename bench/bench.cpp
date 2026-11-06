@@ -113,10 +113,10 @@ std::string sentence(const std::vector<std::string>& words, std::discrete_distri
 
 void build_corpus(Indexer& indexer, const std::vector<std::string>& words,
                   std::discrete_distribution<int>& zipf, std::mt19937_64& rng, int docs) {
-    for (int id = 1; id <= docs; id++) {
+    for (int i = 0; i < docs; i++) {
         const std::string title = sentence(words, zipf, rng, 2 + static_cast<int>(rng() % 3));
         const std::string body = sentence(words, zipf, rng, 20 + static_cast<int>(rng() % 21));
-        indexer.add_document(id, title, body);
+        indexer.add_document(make_text_document(title, body));
     }
 }
 
@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
     const double build_ms = microseconds(build_start, Clock::now()) / 1000.0;
 
     const std::vector<Keystroke> keystrokes = make_keystrokes(words, zipf, rng, options.queries, options.stop);
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), indexer.get_doc_store());
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer());
 
     const Audit audit = audit_pass(searcher, keystrokes, options.docs);
 
