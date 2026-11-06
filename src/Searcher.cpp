@@ -1,5 +1,6 @@
 #include "Searcher.h"
 #include "EditDistance.h"
+#include "TermScorer.h"
 #include "Utf8.h"
 #include <cmath>
 #include <algorithm>
@@ -10,37 +11,6 @@ namespace {
 
 constexpr double completion_weight = 0.5;
 constexpr std::size_t max_fuzzy_candidates = 20;
-
-struct Scope {
-    const InvertedIndex& index;
-    const FieldBoosts& boosts;
-    std::optional<std::string_view> field;
-
-    const std::vector<Posting>* postings(const std::string& term) const {
-        return field ? index.get_postings(*field, term) : index.get_postings(term);
-    }
-
-    std::vector<TermPostings> terms_with_prefix(std::string_view prefix) const {
-        return field ? index.terms_with_prefix(*field, prefix) : index.terms_with_prefix(prefix);
-    }
-
-    int documents() const {
-        return field ? index.get_field_documents(*field) : index.get_total_documents();
-    }
-
-    template <typename Visit>
-    void for_each_field_postings(const std::string& term, Visit&& visit) const {
-        if (field) {
-            if (const std::vector<Posting>* found = index.get_postings(*field, term)) {
-                visit(*field, *found, boosts.get(*field));
-            }
-            return;
-        }
-        for (const FieldPostings& entry : index.get_field_postings(term)) {
-            visit(entry.field, *entry.postings, boosts.get(entry.field));
-        }
-    }
-};
 
 struct PrefixRun {
     const std::vector<Posting>* postings;
@@ -67,53 +37,6 @@ std::size_t max_completions(std::size_t prefix_length) {
     }
     return 32;
 }
-
-double idf(int total_docs, std::size_t doc_freq) {
-    return std::log(static_cast<double>(total_docs + 1) / (doc_freq + 1)) + 1.0;
-}
-
-double bm25_idf(int total_docs, std::size_t doc_freq) {
-    const double n = static_cast<double>(doc_freq);
-    return std::log(1.0 + (total_docs - n + 0.5) / (n + 0.5));
-}
-
-double idf_for(const Scoring& scoring, int total_docs, std::size_t doc_freq) {
-    return scoring.scorer == Scorer::Bm25 ? bm25_idf(total_docs, doc_freq) : idf(total_docs, doc_freq);
-}
-
-bool ranks_before(const SearchHit& a, const SearchHit& b) {
-    if (a.score != b.score) {
-        return a.score > b.score;
-    }
-    return a.doc_id < b.doc_id;
-}
-
-class TopKCollector {
-private:
-    std::size_t capacity;
-    std::priority_queue<SearchHit, std::vector<SearchHit>, decltype(&ranks_before)> worst_on_top{&ranks_before};
-
-public:
-    explicit TopKCollector(std::size_t capacity) : capacity(capacity) {}
-
-    void offer(SearchHit hit) {
-        if (worst_on_top.size() < capacity) {
-            worst_on_top.push(std::move(hit));
-        } else if (capacity > 0 && ranks_before(hit, worst_on_top.top())) {
-            worst_on_top.pop();
-            worst_on_top.push(std::move(hit));
-        }
-    }
-
-    std::vector<SearchHit> take() {
-        std::vector<SearchHit> ranked(worst_on_top.size());
-        for (auto it = ranked.rbegin(); it != ranked.rend(); ++it) {
-            *it = worst_on_top.top();
-            worst_on_top.pop();
-        }
-        return ranked;
-    }
-};
 
 bool more_common(const TermPostings& a, const TermPostings& b) {
     if (a.postings->size() != b.postings->size()) {
@@ -221,51 +144,6 @@ std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total
     }
     return hits;
 }
-
-using DocScores = std::unordered_map<int, double>;
-
-class TermScorer {
-private:
-    const Scope& scope;
-    const InvertedIndex& index;
-    const Scoring& scoring;
-    int total_docs;
-
-public:
-    TermScorer(const Scope& scope, const InvertedIndex& index, const Scoring& scoring)
-        : scope(scope), index(index), scoring(scoring), total_docs(scope.documents()) {}
-
-    DocScores score(const std::string& term) const {
-        DocScores scores;
-        const std::vector<Posting>* postings = scope.postings(term);
-        if (!postings) {
-            return scores;
-        }
-
-        const double term_idf = idf_for(scoring, total_docs, postings->size());
-        const double k1 = scoring.bm25.k1;
-        const double b = scoring.bm25.b;
-        const bool bm25 = scoring.scorer == Scorer::Bm25;
-
-        DocScores weighted_tfs;
-        scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
-                                                double weight) {
-            const double average_length = bm25 ? index.get_average_field_length(field_name) : 0.0;
-            for (const auto& posting : field_postings) {
-                double tf = static_cast<double>(posting.term_frequency) * weight;
-                if (bm25 && average_length > 0.0) {
-                    const double length = index.get_field_length(field_name, posting.doc_id);
-                    tf /= 1.0 - b + b * length / average_length;
-                }
-                weighted_tfs[posting.doc_id] += tf;
-            }
-        });
-        for (const auto& [doc_id, tf] : weighted_tfs) {
-            scores[doc_id] = bm25 ? term_idf * tf / (k1 + tf) : tf * term_idf;
-        }
-        return scores;
-    }
-};
 
 std::vector<FuzzyMatch> fuzzy_candidates(const InvertedIndex& index, const std::string& term) {
     const std::size_t max_distance = fuzzy_max_distance(utf8::count_code_points(term));
