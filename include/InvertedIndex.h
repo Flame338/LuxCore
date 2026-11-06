@@ -32,6 +32,8 @@ class InvertedIndex {
 
         struct FieldIndex {
             PostingMap terms;
+            std::unordered_map<int, int> lengths;
+            long long total_length = 0;
             int documents = 0;
         };
 
@@ -56,5 +58,7 @@ class InvertedIndex {
 
         int get_total_documents() const { return total_documents; }
         int get_field_documents(std::string_view field) const;
+        int get_field_length(std::string_view field, int doc_id) const;
+        double get_average_field_length(std::string_view field) const;
         std::size_t get_unique_terms_count() const { return index.size(); }
 };
