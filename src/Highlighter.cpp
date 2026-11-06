@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -28,24 +29,40 @@ struct Window {
     std::size_t end;
 };
 
-struct QueryTerms {
-    std::unordered_map<std::string, std::size_t> index_of;
-    std::string prefix;
-    std::size_t prefix_index = 0;
-    bool has_prefix = false;
+struct PrefixTarget {
+    std::string term;
+    std::size_t unit;
 };
 
-QueryTerms collect_query_terms(const AnalyzedTokenQuery& query) {
-    QueryTerms terms;
+struct Targets {
+    std::unordered_map<std::string, std::size_t> exact;
+    std::optional<PrefixTarget> prefix;
+    std::size_t unit_count = 0;
+
+    std::size_t exact_unit(const std::string& term) {
+        const auto [slot, inserted] = exact.try_emplace(term, unit_count);
+        if (inserted) {
+            unit_count++;
+        }
+        return slot->second;
+    }
+
+    void set_prefix(const std::string& term) {
+        const auto found = exact.find(term);
+        prefix = PrefixTarget{term, found != exact.end() ? found->second : unit_count++};
+    }
+};
+
+Targets text_targets(const Analyzer& analyzer, const std::string& query_string) {
+    const AnalyzedTokenQuery query = analyzer.analyze_query_tokens(query_string);
+    Targets targets;
     for (const Token& token : query.tokens) {
-        terms.index_of.try_emplace(token.term, terms.index_of.size());
+        targets.exact_unit(token.term);
     }
     if (query.prefix) {
-        terms.has_prefix = true;
-        terms.prefix = query.prefix->term;
-        terms.prefix_index = terms.index_of.try_emplace(terms.prefix, terms.index_of.size()).first->second;
+        targets.set_prefix(query.prefix->term);
     }
-    return terms;
+    return targets;
 }
 
 void assign_code_points(std::string_view text, std::vector<Match>& matches) {
@@ -61,23 +78,19 @@ void assign_code_points(std::string_view text, std::vector<Match>& matches) {
     }
 }
 
-std::vector<Match> find_matches(const Analyzer& analyzer, const std::string& text,
-                                const std::string& query_string) {
-    const QueryTerms terms = collect_query_terms(analyzer.analyze_query_tokens(query_string));
-
+std::vector<Match> find_matches(const std::vector<Token>& tokens, const Targets& targets) {
     std::vector<Match> matches;
-    for (const Token& token : analyzer.analyze_tokens(text)) {
-        const auto exact = terms.index_of.find(token.term);
-        if (exact != terms.index_of.end()) {
+    for (const Token& token : tokens) {
+        const auto exact = targets.exact.find(token.term);
+        if (exact != targets.exact.end()) {
             matches.push_back({token.start_offset, token.end_offset, exact->second});
-        } else if (terms.has_prefix && token.term.starts_with(terms.prefix)) {
-            matches.push_back({token.start_offset, token.end_offset, terms.prefix_index});
+        } else if (targets.prefix && token.term.starts_with(targets.prefix->term)) {
+            matches.push_back({token.start_offset, token.end_offset, targets.prefix->unit});
         }
     }
     std::sort(matches.begin(), matches.end(), [](const Match& a, const Match& b) {
         return std::pair(a.start, a.end) < std::pair(b.start, b.end);
     });
-    assign_code_points(text, matches);
     return matches;
 }
 
@@ -196,21 +209,26 @@ std::string render(std::string_view text, const std::vector<Span>& spans, std::s
     return out;
 }
 
+std::string highlight(const Analyzer& analyzer, const HighlightOptions& options, const std::string& text,
+                      const Targets& targets) {
+    std::vector<Match> matches = find_matches(analyzer.analyze_tokens(text), targets);
+    assign_code_points(text, matches);
+
+    const std::size_t total = utf8::count_code_points(text);
+    const Window window = choose_window(matches, total, options.length);
+    const std::size_t window_begin = advance_code_points(text, 0, window.begin);
+    const std::size_t window_end = advance_code_points(text, window_begin, window.end - window.begin);
+
+    return render(text, merge_spans(matches, window_begin, window_end), window_begin, window_end, options);
+}
+
 }
 
 Highlighter::Highlighter(const Analyzer& analyzer, HighlightOptions options)
     : analyzer(analyzer), options(std::move(options)) {}
 
 std::string Highlighter::snippet(const std::string& stored_text, const std::string& query_string) const {
-    const std::vector<Match> matches = find_matches(analyzer, stored_text, query_string);
-
-    const std::size_t total = utf8::count_code_points(stored_text);
-    const Window window = choose_window(matches, total, options.length);
-    const std::size_t window_begin = advance_code_points(stored_text, 0, window.begin);
-    const std::size_t window_end = advance_code_points(stored_text, window_begin, window.end - window.begin);
-
-    return render(stored_text, merge_spans(matches, window_begin, window_end), window_begin, window_end,
-                  options);
+    return highlight(analyzer, options, stored_text, text_targets(analyzer, query_string));
 }
 
 std::string Highlighter::snippet(const Document& document, std::string_view field,
