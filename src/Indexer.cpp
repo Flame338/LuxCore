@@ -1,25 +1,35 @@
 #include "Indexer.h"
 
+#include <cstdint>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace {
 
 struct Prepared {
-    FieldTermFreqs field_term_freqs;
+    FieldTermPositions field_term_positions;
     Document stored;
 };
 
 Prepared prepare(const Analyzer& analyzer, const Document& document) {
     Prepared prepared;
+    std::unordered_map<std::string, std::uint32_t> next_base;
     for (const Field& field : document.get_fields()) {
         if (field.options.indexed) {
+            const std::uint32_t base = next_base[field.name];
             if (field.options.analyzed) {
-                for (const std::string& token : analyzer.analyze(field.value)) {
-                    prepared.field_term_freqs[field.name][token]++;
+                std::uint32_t end = base;
+                for (const Token& token : analyzer.analyze_tokens(field.value)) {
+                    const std::uint32_t position = base + static_cast<std::uint32_t>(token.position);
+                    prepared.field_term_positions[field.name][token.term].push_back(position);
+                    end = position + 2;
                 }
+                next_base[field.name] = end;
             } else if (!field.value.empty()) {
-                prepared.field_term_freqs[field.name][field.value]++;
+                prepared.field_term_positions[field.name][field.value].push_back(base);
+                next_base[field.name] = base + 2;
             }
         }
         if (field.options.stored) {
@@ -37,7 +47,7 @@ Indexer::Indexer(const std::string& stop_words_path)
 int Indexer::add_document(const Document& document) {
     Prepared prepared = prepare(analyzer, document);
     const int id = doc_store.add(std::move(prepared.stored));
-    inverted_index.add_document(id, prepared.field_term_freqs);
+    inverted_index.add_document(id, prepared.field_term_positions);
     return id;
 }
 
@@ -60,7 +70,7 @@ bool Indexer::update_document(int id, const Document& document) {
     }
     Prepared prepared = prepare(analyzer, document);
     doc_store.replace(id, std::move(prepared.stored));
-    inverted_index.add_document(id, prepared.field_term_freqs);
+    inverted_index.add_document(id, prepared.field_term_positions);
     return true;
 }
 
