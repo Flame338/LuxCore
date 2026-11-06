@@ -1,12 +1,15 @@
 #include "Searcher.h"
+#include "EditDistance.h"
 #include "Utf8.h"
 #include <cmath>
 #include <algorithm>
+#include <limits>
 #include <queue>
 
 namespace {
 
 constexpr double completion_weight = 0.5;
+constexpr std::size_t max_fuzzy_candidates = 20;
 
 struct Scope {
     const InvertedIndex& index;
@@ -219,11 +222,102 @@ std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total
     return hits;
 }
 
+using DocScores = std::unordered_map<int, double>;
+
+class TermScorer {
+private:
+    const Scope& scope;
+    const InvertedIndex& index;
+    const Scoring& scoring;
+    int total_docs;
+
+public:
+    TermScorer(const Scope& scope, const InvertedIndex& index, const Scoring& scoring)
+        : scope(scope), index(index), scoring(scoring), total_docs(scope.documents()) {}
+
+    DocScores score(const std::string& term) const {
+        DocScores scores;
+        const std::vector<Posting>* postings = scope.postings(term);
+        if (!postings) {
+            return scores;
+        }
+
+        const double term_idf = idf_for(scoring, total_docs, postings->size());
+        const double k1 = scoring.bm25.k1;
+        const double b = scoring.bm25.b;
+        const bool bm25 = scoring.scorer == Scorer::Bm25;
+
+        DocScores weighted_tfs;
+        scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
+                                                double weight) {
+            const double average_length = bm25 ? index.get_average_field_length(field_name) : 0.0;
+            for (const auto& posting : field_postings) {
+                double tf = static_cast<double>(posting.term_frequency) * weight;
+                if (bm25 && average_length > 0.0) {
+                    const double length = index.get_field_length(field_name, posting.doc_id);
+                    tf /= 1.0 - b + b * length / average_length;
+                }
+                weighted_tfs[posting.doc_id] += tf;
+            }
+        });
+        for (const auto& [doc_id, tf] : weighted_tfs) {
+            scores[doc_id] = bm25 ? term_idf * tf / (k1 + tf) : tf * term_idf;
+        }
+        return scores;
+    }
+};
+
+std::vector<FuzzyMatch> fuzzy_candidates(const InvertedIndex& index, const std::string& term) {
+    const std::size_t max_distance = fuzzy_max_distance(utf8::count_code_points(term));
+    std::vector<FuzzyMatch> matches;
+    if (max_distance == 0) {
+        return matches;
+    }
+    for (FuzzyMatch& match : index.fuzzy_terms(term, max_distance)) {
+        if (match.distance > 0) {
+            matches.push_back(std::move(match));
+        }
+    }
+    auto frequency = [&index](const FuzzyMatch& match) {
+        const std::vector<Posting>* postings = index.get_postings(match.term);
+        return postings ? postings->size() : std::size_t{0};
+    };
+    std::ranges::stable_sort(matches, [&](const FuzzyMatch& a, const FuzzyMatch& b) {
+        return a.distance != b.distance ? a.distance < b.distance : frequency(a) > frequency(b);
+    });
+    if (matches.size() > max_fuzzy_candidates) {
+        matches.resize(max_fuzzy_candidates);
+    }
+    return matches;
+}
+
+DocScores fuzzy_scores(const TermScorer& scorer, const InvertedIndex& index, const std::string& term,
+                       const DocScores& exact) {
+    double exact_floor = std::numeric_limits<double>::infinity();
+    for (const auto& [doc_id, score] : exact) {
+        exact_floor = std::min(exact_floor, score);
+    }
+
+    DocScores best;
+    for (const FuzzyMatch& match : fuzzy_candidates(index, term)) {
+        const double factor = fuzzy_score_factor(match.distance);
+        for (const auto& [doc_id, score] : scorer.score(match.term)) {
+            if (exact.contains(doc_id)) {
+                continue;
+            }
+            double& slot = best[doc_id];
+            slot = std::max(slot, factor * std::min(score, exact_floor));
+        }
+    }
+    return best;
+}
+
 }
 
 Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer, FieldBoosts boosts,
-                   const DocumentKeys* keys, Scoring scoring)
-    : inverted_index(index), analyzer(analyzer), boosts(std::move(boosts)), keys(keys), scoring(scoring) {}
+                   const DocumentKeys* keys, Scoring scoring, Fuzziness fuzziness)
+    : inverted_index(index), analyzer(analyzer), boosts(std::move(boosts)), keys(keys), scoring(scoring),
+      fuzziness(fuzziness) {}
 
 std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::size_t limit) const {
     return suggest_scoped(query_string, std::nullopt, limit);
@@ -266,34 +360,19 @@ std::vector<SearchHit> Searcher::search_scoped(const std::string& query_string,
                                                std::optional<std::string_view> field, int top_k) const {
     AnalyzedQuery query = analyzer.analyze_query(query_string);
     const Scope scope{inverted_index, boosts, field};
-    std::unordered_map<int, double> doc_scores;
-    std::unordered_map<int, double> weighted_tfs;
-    int total_docs = scope.documents();
+    DocScores doc_scores;
+    const int total_docs = scope.documents();
+    const TermScorer scorer(scope, inverted_index, scoring);
 
     for (const auto& term : query.terms) {
-        const std::vector<Posting>* postings = scope.postings(term);
-        if (!postings) continue;
-
-        const double term_idf = idf_for(scoring, total_docs, postings->size());
-        const double k1 = scoring.bm25.k1;
-        const double b = scoring.bm25.b;
-        const bool bm25 = scoring.scorer == Scorer::Bm25;
-
-        weighted_tfs.clear();
-        scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
-                                                double weight) {
-            const double average_length = bm25 ? inverted_index.get_average_field_length(field_name) : 0.0;
-            for (const auto& posting : field_postings) {
-                double tf = static_cast<double>(posting.term_frequency) * weight;
-                if (bm25 && average_length > 0.0) {
-                    const double length = inverted_index.get_field_length(field_name, posting.doc_id);
-                    tf /= 1.0 - b + b * length / average_length;
-                }
-                weighted_tfs[posting.doc_id] += tf;
+        const DocScores exact = scorer.score(term);
+        for (const auto& [doc_id, score] : exact) {
+            doc_scores[doc_id] += score;
+        }
+        if (fuzziness == Fuzziness::On) {
+            for (const auto& [doc_id, score] : fuzzy_scores(scorer, inverted_index, term, exact)) {
+                doc_scores[doc_id] += score;
             }
-        });
-        for (const auto& [doc_id, tf] : weighted_tfs) {
-            doc_scores[doc_id] += bm25 ? term_idf * tf / (k1 + tf) : tf * term_idf;
         }
     }
 

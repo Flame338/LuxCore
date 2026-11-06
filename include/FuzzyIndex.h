@@ -22,7 +22,10 @@ class FuzzyIndex {
 
         std::vector<Node> nodes{Node{}};
         std::vector<std::string> terms;
+        std::vector<std::size_t> free_nodes;
 
+        std::size_t new_node();
+        std::size_t find_node(const std::vector<char32_t>& code_points) const;
         void collect(std::size_t node, const std::vector<char32_t>& query,
                      const std::vector<std::size_t>& row, std::size_t max_distance,
                      std::vector<FuzzyMatch>& out) const;
@@ -32,6 +35,7 @@ class FuzzyIndex {
         explicit FuzzyIndex(const std::vector<std::string>& source_terms);
 
         void add(std::string_view term);
+        void remove(std::string_view term);
 
         std::vector<FuzzyMatch> candidates(std::string_view term, std::size_t max_distance) const;
 

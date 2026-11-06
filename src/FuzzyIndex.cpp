@@ -10,13 +10,36 @@ FuzzyIndex::FuzzyIndex(const std::vector<std::string>& source_terms) {
     }
 }
 
+std::size_t FuzzyIndex::new_node() {
+    if (free_nodes.empty()) {
+        nodes.emplace_back();
+        return nodes.size() - 1;
+    }
+    const std::size_t node = free_nodes.back();
+    free_nodes.pop_back();
+    nodes[node] = Node{};
+    return node;
+}
+
+std::size_t FuzzyIndex::find_node(const std::vector<char32_t>& code_points) const {
+    std::size_t node = 0;
+    for (const char32_t code_point : code_points) {
+        const auto child = nodes[node].children.find(code_point);
+        if (child == nodes[node].children.end()) {
+            return no_term;
+        }
+        node = child->second;
+    }
+    return node;
+}
+
 void FuzzyIndex::add(std::string_view term) {
     std::size_t node = 0;
     for (const char32_t code_point : to_code_points(term)) {
         auto child = nodes[node].children.find(code_point);
         if (child == nodes[node].children.end()) {
-            nodes.emplace_back();
-            child = nodes[node].children.emplace(code_point, nodes.size() - 1).first;
+            const std::size_t created = new_node();
+            child = nodes[node].children.emplace(code_point, created).first;
         }
         node = child->second;
     }
@@ -24,6 +47,33 @@ void FuzzyIndex::add(std::string_view term) {
     if (nodes[node].term_id == no_term) {
         nodes[node].term_id = terms.size();
         terms.emplace_back(term);
+    }
+}
+
+void FuzzyIndex::remove(std::string_view term) {
+    const std::vector<char32_t> code_points = to_code_points(term);
+    const std::size_t node = find_node(code_points);
+    if (node == no_term || nodes[node].term_id == no_term) {
+        return;
+    }
+
+    const std::size_t id = nodes[node].term_id;
+    nodes[node].term_id = no_term;
+    if (id != terms.size() - 1) {
+        terms[id] = std::move(terms.back());
+        nodes[find_node(to_code_points(terms[id]))].term_id = id;
+    }
+    terms.pop_back();
+
+    std::size_t current = node;
+    for (std::size_t depth = code_points.size(); depth > 0; depth--) {
+        if (!nodes[current].children.empty() || nodes[current].term_id != no_term) {
+            break;
+        }
+        const std::size_t parent = find_node({code_points.begin(), code_points.begin() + (depth - 1)});
+        nodes[parent].children.erase(code_points[depth - 1]);
+        free_nodes.push_back(current);
+        current = parent;
     }
 }
 
