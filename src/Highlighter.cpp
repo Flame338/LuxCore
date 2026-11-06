@@ -1,5 +1,6 @@
 #include "Highlighter.h"
 
+#include "EditDistance.h"
 #include "Utf8.h"
 
 #include <algorithm>
@@ -34,6 +35,13 @@ struct PrefixTarget {
     std::size_t unit;
 };
 
+struct FuzzyTarget {
+    std::string term;
+    std::size_t code_points;
+    std::size_t max_distance;
+    std::size_t unit;
+};
+
 struct PhraseTarget {
     std::vector<PhraseTerm> terms;
     std::size_t unit;
@@ -48,6 +56,7 @@ bool same_phrase(const std::vector<PhraseTerm>& a, const std::vector<PhraseTerm>
 struct Targets {
     std::unordered_map<std::string, std::size_t> exact;
     std::optional<PrefixTarget> prefix;
+    std::vector<FuzzyTarget> fuzzy;
     std::vector<PhraseTarget> phrases;
     std::size_t unit_count = 0;
 
@@ -64,6 +73,14 @@ struct Targets {
         prefix = PrefixTarget{term, found != exact.end() ? found->second : unit_count++};
     }
 
+    void add_fuzzy(const std::string& term, std::size_t unit) {
+        const std::size_t code_points = utf8::count_code_points(term);
+        const std::size_t max_distance = fuzzy_max_distance(code_points);
+        if (max_distance > 0) {
+            fuzzy.push_back({term, code_points, max_distance, unit});
+        }
+    }
+
     void add_phrase(const std::vector<PhraseTerm>& terms) {
         const bool known = std::ranges::any_of(
             phrases, [&terms](const PhraseTarget& phrase) { return same_phrase(phrase.terms, terms); });
@@ -73,11 +90,15 @@ struct Targets {
     }
 };
 
-Targets text_targets(const Analyzer& analyzer, const std::string& query_string) {
+Targets text_targets(const Analyzer& analyzer, const std::string& query_string, Fuzziness fuzziness) {
     const AnalyzedTokenQuery query = analyzer.analyze_query_tokens(query_string);
     Targets targets;
     for (const Token& token : query.tokens) {
-        targets.exact_unit(token.term);
+        const bool repeated = targets.exact.contains(token.term);
+        const std::size_t unit = targets.exact_unit(token.term);
+        if (fuzziness == Fuzziness::On && !repeated) {
+            targets.add_fuzzy(token.term, unit);
+        }
     }
     if (query.prefix) {
         targets.set_prefix(query.prefix->term);
@@ -161,6 +182,28 @@ void add_phrase_matches(const std::vector<Token>& tokens, const TokensAtPosition
     }
 }
 
+std::optional<std::size_t> fuzzy_unit(const std::string& term, const std::vector<FuzzyTarget>& fuzzy) {
+    std::optional<std::size_t> unit;
+    if (fuzzy.empty()) {
+        return unit;
+    }
+    const std::size_t code_points = utf8::count_code_points(term);
+    std::size_t best = 0;
+    for (const FuzzyTarget& target : fuzzy) {
+        const std::size_t gap = code_points > target.code_points ? code_points - target.code_points
+                                                                 : target.code_points - code_points;
+        if (gap > target.max_distance) {
+            continue;
+        }
+        const std::size_t distance = edit_distance(term, target.term, target.max_distance);
+        if (distance <= target.max_distance && (!unit || distance < best)) {
+            unit = target.unit;
+            best = distance;
+        }
+    }
+    return unit;
+}
+
 std::vector<Match> find_matches(const std::vector<Token>& tokens, const Targets& targets) {
     std::vector<Match> matches;
     for (const Token& token : tokens) {
@@ -169,6 +212,8 @@ std::vector<Match> find_matches(const std::vector<Token>& tokens, const Targets&
             matches.push_back({token.start_offset, token.end_offset, exact->second});
         } else if (targets.prefix && token.term.starts_with(targets.prefix->term)) {
             matches.push_back({token.start_offset, token.end_offset, targets.prefix->unit});
+        } else if (const std::optional<std::size_t> unit = fuzzy_unit(token.term, targets.fuzzy)) {
+            matches.push_back({token.start_offset, token.end_offset, *unit});
         }
     }
     if (!targets.phrases.empty()) {
@@ -320,7 +365,7 @@ Highlighter::Highlighter(const Analyzer& analyzer, HighlightOptions options)
     : analyzer(analyzer), options(std::move(options)) {}
 
 std::string Highlighter::snippet(const std::string& stored_text, const std::string& query_string) const {
-    return highlight(analyzer, options, stored_text, text_targets(analyzer, query_string));
+    return highlight(analyzer, options, stored_text, text_targets(analyzer, query_string, options.fuzziness));
 }
 
 std::string Highlighter::snippet(const Document& document, std::string_view field,

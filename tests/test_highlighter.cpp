@@ -3,8 +3,10 @@
 #include "Analyzer.h"
 #include "Highlighter.h"
 #include "IdentifierTokenizer.h"
+#include "Indexer.h"
 #include "Query.h"
 #include "QueryParser.h"
+#include "Searcher.h"
 #include "Utf8.h"
 
 #include <algorithm>
@@ -53,6 +55,11 @@ HighlightOptions bracketed(std::size_t length) {
 std::string snippet_of(const std::string& text, const std::string& query, HighlightOptions options = {}) {
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
     return Highlighter(analyzer, std::move(options)).snippet(text, query);
+}
+
+HighlightOptions fuzzy(HighlightOptions options = {}) {
+    options.fuzziness = Fuzziness::On;
+    return options;
 }
 
 std::string snippet_for_query(const std::string& text, const std::string& query_text,
@@ -479,4 +486,136 @@ TEST(highlight_query_and_string_paths_agree_on_a_plain_word) {
     const Highlighter highlighter(analyzer);
     const ParseResult parsed = QueryParser(analyzer).parse("fox");
     CHECK_EQ(highlighter.snippet("The Fox runs", *parsed.query), highlighter.snippet("The Fox runs", "fox "));
+}
+
+TEST(highlight_fuzzy_is_off_by_default) {
+    CHECK_EQ(snippet_of("A search engine", "serch "), "A search engine");
+    CHECK(HighlightOptions{}.fuzziness == Fuzziness::Off);
+}
+
+TEST(highlight_fuzzy_marks_the_word_a_typo_stands_for) {
+    CHECK_EQ(snippet_of("A search engine", "serch ", fuzzy()), "A <em>search</em> engine");
+    CHECK_EQ(snippet_of("A search engine", "saerch ", fuzzy()), "A <em>search</em> engine");
+    CHECK_EQ(snippet_of("A search engine", "serch engin ", fuzzy()), "A <em>search</em> <em>engine</em>");
+}
+
+TEST(highlight_fuzzy_also_marks_a_typo_in_the_text) {
+    CHECK_EQ(snippet_of("A serch engine", "search ", fuzzy()), "A <em>serch</em> engine");
+}
+
+TEST(highlight_fuzzy_keeps_marking_the_exact_word) {
+    CHECK_EQ(snippet_of("serch search", "serch ", fuzzy()), "<em>serch</em> <em>search</em>");
+    CHECK_EQ(snippet_of("The fox", "fox ", fuzzy()), "The <em>fox</em>");
+}
+
+TEST(highlight_fuzzy_never_applies_to_words_of_one_or_two_code_points) {
+    CHECK_EQ(snippet_of("an oz and ox", "ox ", fuzzy()), "an oz and <em>ox</em>");
+    CHECK_EQ(snippet_of("x y z", "y ", fuzzy()), "x <em>y</em> z");
+}
+
+TEST(highlight_fuzzy_allows_one_edit_for_three_to_five_code_points) {
+    CHECK_EQ(snippet_of("cot cut cow", "cat ", fuzzy()), "<em>cot</em> <em>cut</em> cow");
+    CHECK_EQ(snippet_of("frut fract", "fruit ", fuzzy()), "<em>frut</em> fract");
+}
+
+TEST(highlight_fuzzy_allows_two_edits_from_six_code_points) {
+    CHECK_EQ(snippet_of("orxnxe oxxnxe", "orange ", fuzzy()), "<em>orxnxe</em> oxxnxe");
+}
+
+TEST(highlight_fuzzy_does_not_mark_words_beyond_the_limit) {
+    CHECK_EQ(snippet_of("A garden with tomatoes", "serch ", fuzzy()), "A garden with tomatoes");
+    CHECK_EQ(snippet_of("A searching engine", "serch ", fuzzy()), "A searching engine");
+}
+
+TEST(highlight_fuzzy_repeated_query_word_gives_the_same_marks) {
+    CHECK_EQ(snippet_of("A search engine", "serch serch ", fuzzy()), "A <em>search</em> engine");
+}
+
+TEST(highlight_fuzzy_counts_a_query_word_and_its_typo_hits_as_one_distinct_term) {
+    const std::string text = "serch search " + repeat("zz ", 100) + "serch engine " + repeat("zz ", 100);
+    const std::string snippet = snippet_of(text, "serch engine ", fuzzy(bracketed(40)));
+    CHECK(snippet.find("[serch] [engine]") != std::string::npos);
+    CHECK(!snippet.starts_with("[serch] [search]"));
+}
+
+TEST(highlight_fuzzy_counts_fuzzy_and_exact_hits_of_different_words_as_distinct_terms) {
+    const std::string text = "search search search " + repeat("zz ", 100) + "search engine " + repeat("zz ", 100);
+    const std::string snippet = snippet_of(text, "serch engine ", fuzzy(bracketed(40)));
+    CHECK(snippet.find("[search] [engine]") != std::string::npos);
+    CHECK(!snippet.starts_with("[search] [search]"));
+}
+
+TEST(highlight_fuzzy_assigns_a_word_to_the_nearest_query_word) {
+    const std::string text = "search seerch " + repeat("zz ", 100) + "serchx engine " + repeat("zz ", 100);
+    const std::string snippet = snippet_of(text, "serchx seerch engine ", fuzzy(bracketed(40)));
+    CHECK(snippet.find("[serchx] [engine]") != std::string::npos);
+    CHECK(!snippet.starts_with("[search]"));
+}
+
+TEST(highlight_fuzzy_follows_the_analyzer_for_accents) {
+    const std::string cafe_accented = "Caf" + E_ACUTE;
+    CHECK_EQ(snippet_of("A " + cafe_accented + " in town", "cafee ", fuzzy()),
+             "A <em>" + cafe_accented + "</em> in town");
+    CHECK_EQ(snippet_of("A " + cafe_accented + " in town", "cafw ", fuzzy()),
+             "A <em>" + cafe_accented + "</em> in town");
+    CHECK_EQ(snippet_of("A " + cafe_accented + " in town", "cafee ", {}), "A " + cafe_accented + " in town");
+}
+
+TEST(highlight_fuzzy_leaves_a_cjk_query_as_it_was) {
+    const std::string text = utf8_of(U"我住在东京很久了");
+    CHECK_EQ(snippet_of(text, utf8_of(U"东京"), fuzzy()), snippet_of(text, utf8_of(U"东京")));
+    CHECK_EQ(snippet_of(text, utf8_of(U"东 "), fuzzy()),
+             utf8_of(U"我住在") + "<em>" + utf8_of(U"东") + "</em>" + utf8_of(U"京很久了"));
+}
+
+TEST(highlight_fuzzy_does_not_touch_the_unfinished_last_word) {
+    CHECK_EQ(snippet_of("serch results and search", "serch", fuzzy()), "<em>serch</em> results and search");
+    CHECK_EQ(snippet_of("serch results and search", "serch ", fuzzy()),
+             "<em>serch</em> results and <em>search</em>");
+    CHECK_EQ(snippet_of("A search engine", "serch eng", fuzzy()), "A <em>search</em> <em>engine</em>");
+}
+
+TEST(highlight_fuzzy_applies_to_the_document_overload) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const Highlighter highlighter(analyzer, fuzzy());
+    const Document document = make_text_document("Search tales", "A quick brown fox");
+    CHECK_EQ(highlighter.snippet(document, "title", "serch "), "<em>Search</em> tales");
+    CHECK_EQ(highlighter.snippet(document, "body", "serch "), "A quick brown fox");
+}
+
+TEST(highlight_fuzzy_does_not_apply_to_a_query_tree) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const Highlighter highlighter(analyzer, fuzzy());
+    CHECK_EQ(highlighter.snippet("A search engine", TermQuery("serch")), "A search engine");
+    CHECK_EQ(highlighter.snippet("A search engine", TermQuery("search")), "A <em>search</em> engine");
+}
+
+TEST(highlight_fuzzy_marks_what_a_fuzzy_search_found) {
+    Indexer indexer("stopwords.txt");
+    indexer.add_document("engine", make_text_document("Search engine", "ranking and indexing"));
+    indexer.add_document("garden", make_text_document("Garden", "tomatoes and basil"));
+    indexer.add_document("kitchen", make_text_document("Kitchen", "pots and pans"));
+    const Searcher exact(indexer.get_index(), indexer.get_analyzer());
+    const Searcher fuzzy_searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
+                                  &indexer.get_keys(), Scoring::tf_idf(), Fuzziness::On);
+    const Highlighter plain(indexer.get_analyzer());
+    const Highlighter fuzzy_highlighter(indexer.get_analyzer(), fuzzy());
+
+    for (const std::string query : {"serch ", "engin ", "rankng ", "saerch engine "}) {
+        const std::vector<SearchHit> hits = fuzzy_searcher.search(query);
+        CHECK_EQ(hits.size(), std::size_t{1});
+        for (const SearchHit& hit : hits) {
+            const Document& document = indexer.get_document(hit.doc_id);
+            CHECK_EQ(hit.key, "engine");
+            const std::string title = fuzzy_highlighter.snippet(document, "title", query);
+            const std::string body = fuzzy_highlighter.snippet(document, "body", query);
+            CHECK(title.find("<em>") != std::string::npos || body.find("<em>") != std::string::npos);
+        }
+    }
+
+    CHECK(exact.search("serch ").empty());
+    CHECK(fuzzy_searcher.search("serch ").size() == 1);
+    const Document& engine = indexer.get_document(fuzzy_searcher.search("serch ").front().doc_id);
+    CHECK_EQ(fuzzy_highlighter.snippet(engine, "title", "serch "), "<em>Search</em> engine");
+    CHECK_EQ(plain.snippet(engine, "title", "serch "), "Search engine");
 }

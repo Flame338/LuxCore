@@ -2,6 +2,7 @@
 
 #include "Analyzer.h"
 #include "Document.h"
+#include "EditDistance.h"
 #include "Query.h"
 
 #include <cstddef>
@@ -14,6 +15,7 @@ struct HighlightOptions {
     std::string start_marker = "<em>";
     std::string end_marker = "</em>";
     std::string ellipsis = "...";
+    Fuzziness fuzziness = Fuzziness::Off;
 };
 
 class Highlighter {
