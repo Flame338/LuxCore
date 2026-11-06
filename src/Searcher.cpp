@@ -2,6 +2,7 @@
 #include "Utf8.h"
 #include <cmath>
 #include <algorithm>
+#include <queue>
 
 namespace {
 
@@ -28,12 +29,12 @@ struct Scope {
     void for_each_field_postings(const std::string& term, Visit&& visit) const {
         if (field) {
             if (const std::vector<Posting>* found = index.get_postings(*field, term)) {
-                visit(*found, boosts.get(*field));
+                visit(*field, *found, boosts.get(*field));
             }
             return;
         }
         for (const FieldPostings& entry : index.get_field_postings(term)) {
-            visit(*entry.postings, boosts.get(entry.field));
+            visit(entry.field, *entry.postings, boosts.get(entry.field));
         }
     }
 };
@@ -68,6 +69,49 @@ double idf(int total_docs, std::size_t doc_freq) {
     return std::log(static_cast<double>(total_docs + 1) / (doc_freq + 1)) + 1.0;
 }
 
+double bm25_idf(int total_docs, std::size_t doc_freq) {
+    const double n = static_cast<double>(doc_freq);
+    return std::log(1.0 + (total_docs - n + 0.5) / (n + 0.5));
+}
+
+double idf_for(const Scoring& scoring, int total_docs, std::size_t doc_freq) {
+    return scoring.scorer == Scorer::Bm25 ? bm25_idf(total_docs, doc_freq) : idf(total_docs, doc_freq);
+}
+
+bool ranks_before(const SearchHit& a, const SearchHit& b) {
+    if (a.score != b.score) {
+        return a.score > b.score;
+    }
+    return a.doc_id < b.doc_id;
+}
+
+class TopKCollector {
+private:
+    std::size_t capacity;
+    std::priority_queue<SearchHit, std::vector<SearchHit>, decltype(&ranks_before)> worst_on_top{&ranks_before};
+
+public:
+    explicit TopKCollector(std::size_t capacity) : capacity(capacity) {}
+
+    void offer(SearchHit hit) {
+        if (worst_on_top.size() < capacity) {
+            worst_on_top.push(std::move(hit));
+        } else if (capacity > 0 && ranks_before(hit, worst_on_top.top())) {
+            worst_on_top.pop();
+            worst_on_top.push(std::move(hit));
+        }
+    }
+
+    std::vector<SearchHit> take() {
+        std::vector<SearchHit> ranked(worst_on_top.size());
+        for (auto it = ranked.rbegin(); it != ranked.rend(); ++it) {
+            *it = worst_on_top.top();
+            worst_on_top.pop();
+        }
+        return ranked;
+    }
+};
+
 bool more_common(const TermPostings& a, const TermPostings& b) {
     if (a.postings->size() != b.postings->size()) {
         return a.postings->size() > b.postings->size();
@@ -78,7 +122,7 @@ bool more_common(const TermPostings& a, const TermPostings& b) {
 PrefixExpansion expand(const Scope& scope, const std::string& prefix) {
     PrefixExpansion expansion;
     auto add_runs = [&](const std::string& term, bool exact) {
-        scope.for_each_field_postings(term, [&](const std::vector<Posting>& postings, double weight) {
+        scope.for_each_field_postings(term, [&](std::string_view, const std::vector<Posting>& postings, double weight) {
             expansion.runs.push_back({&postings, weight, exact});
         });
     };
@@ -158,9 +202,9 @@ std::vector<PrefixTally> merge_postings(const PrefixExpansion& expansion) {
     return tallies;
 }
 
-std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total_docs) {
+std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total_docs, const Scoring& scoring) {
     const std::vector<PrefixTally> tallies = merge_postings(expansion);
-    const double prefix_idf = idf(total_docs, tallies.size());
+    const double prefix_idf = idf_for(scoring, total_docs, tallies.size());
 
     std::vector<SearchHit> hits;
     hits.reserve(tallies.size());
@@ -177,8 +221,9 @@ std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total
 
 }
 
-Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer, FieldBoosts boosts)
-    : inverted_index(index), analyzer(analyzer), boosts(std::move(boosts)) {}
+Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer, FieldBoosts boosts,
+                   const DocumentKeys* keys, Scoring scoring)
+    : inverted_index(index), analyzer(analyzer), boosts(std::move(boosts)), keys(keys), scoring(scoring) {}
 
 std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::size_t limit) const {
     return suggest_scoped(query_string, std::nullopt, limit);
@@ -229,22 +274,32 @@ std::vector<SearchHit> Searcher::search_scoped(const std::string& query_string,
         const std::vector<Posting>* postings = scope.postings(term);
         if (!postings) continue;
 
-        double term_idf = idf(total_docs, postings->size());
+        const double term_idf = idf_for(scoring, total_docs, postings->size());
+        const double k1 = scoring.bm25.k1;
+        const double b = scoring.bm25.b;
+        const bool bm25 = scoring.scorer == Scorer::Bm25;
 
         weighted_tfs.clear();
-        scope.for_each_field_postings(term, [&](const std::vector<Posting>& field_postings, double weight) {
+        scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
+                                                double weight) {
+            const double average_length = bm25 ? inverted_index.get_average_field_length(field_name) : 0.0;
             for (const auto& posting : field_postings) {
-                weighted_tfs[posting.doc_id] += static_cast<double>(posting.term_frequency) * weight;
+                double tf = static_cast<double>(posting.term_frequency) * weight;
+                if (bm25 && average_length > 0.0) {
+                    const double length = inverted_index.get_field_length(field_name, posting.doc_id);
+                    tf /= 1.0 - b + b * length / average_length;
+                }
+                weighted_tfs[posting.doc_id] += tf;
             }
         });
         for (const auto& [doc_id, tf] : weighted_tfs) {
-            doc_scores[doc_id] += tf * term_idf;
+            doc_scores[doc_id] += bm25 ? term_idf * tf / (k1 + tf) : tf * term_idf;
         }
     }
 
     std::vector<SearchHit> results;
     if (query.prefix) {
-        results = prefix_scores(expand(scope, *query.prefix), total_docs);
+        results = prefix_scores(expand(scope, *query.prefix), total_docs, scoring);
     }
 
     if (!doc_scores.empty()) {
@@ -258,15 +313,16 @@ std::vector<SearchHit> Searcher::search_scoped(const std::string& query_string,
         }
     }
 
-    size_t keep = std::min(results.size(), static_cast<size_t>(top_k));
-    std::partial_sort(results.begin(), results.begin() + keep, results.end(),
-                      [](const SearchHit& a, const SearchHit& b) {
-        if (a.score != b.score) {
-            return a.score > b.score;
-        }
-        return a.doc_id < b.doc_id;
-    });
-    results.resize(keep);
+    TopKCollector collector(top_k > 0 ? static_cast<std::size_t>(top_k) : 0);
+    for (SearchHit& hit : results) {
+        collector.offer(std::move(hit));
+    }
+    results = collector.take();
 
+    if (keys) {
+        for (SearchHit& hit : results) {
+            hit.key = keys->key_of(hit.doc_id);
+        }
+    }
     return results;
 }

@@ -2,6 +2,7 @@
 
 #include "InvertedIndex.h"
 #include "Analyzer.h"
+#include "DocumentKeys.h"
 #include <iostream>
 #include <map>
 #include <optional>
@@ -13,6 +14,7 @@
 struct SearchHit {
     int doc_id;
     double score;
+    std::string key = {};
 };
 
 struct Suggestion {
@@ -43,11 +45,28 @@ class FieldBoosts {
         }
 };
 
+enum class Scorer { TfIdf, Bm25 };
+
+struct Bm25Params {
+    double k1 = 1.2;
+    double b = 0.75;
+};
+
+struct Scoring {
+    Scorer scorer = Scorer::TfIdf;
+    Bm25Params bm25 = {};
+
+    static Scoring tf_idf() { return {}; }
+    static Scoring bm25_with(double k1 = 1.2, double b = 0.75) { return {Scorer::Bm25, {k1, b}}; }
+};
+
 class Searcher {
     private:
         const InvertedIndex& inverted_index;
         const Analyzer& analyzer;
         FieldBoosts boosts;
+        const DocumentKeys* keys;
+        Scoring scoring;
 
         std::vector<SearchHit> search_scoped(const std::string& query_string, std::optional<std::string_view> field,
                                              int top_k) const;
@@ -56,7 +75,8 @@ class Searcher {
 
     public:
         explicit Searcher(const InvertedIndex& index, const Analyzer& analyzer,
-                          FieldBoosts boosts = FieldBoosts::standard());
+                          FieldBoosts boosts = FieldBoosts::standard(), const DocumentKeys* keys = nullptr,
+                          Scoring scoring = Scoring::tf_idf());
 
         std::vector<SearchHit> search(const std::string& query_string, int top_k = 10) const;
         std::vector<SearchHit> search_in(std::string_view field, const std::string& query_string, int top_k = 10) const;

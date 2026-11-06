@@ -46,11 +46,15 @@ void InvertedIndex::add_document(int doc_id, const FieldTermFreqs& field_term_fr
         field_index.documents++;
 
         IndexedField& entry = indexed.emplace_back(IndexedField{field, {}});
+        int length = 0;
         for (const auto& [term, freq] : term_freqs) {
+            length += freq;
             insert_posting(field_index.terms[term], doc_id, freq);
             entry.terms.push_back(term);
             merged[term] += freq;
         }
+        field_index.lengths[doc_id] = length;
+        field_index.total_length += length;
     }
 
     for (const auto& [term, freq] : merged) {
@@ -70,6 +74,10 @@ void InvertedIndex::remove_document(int doc_id) {
         for (const std::string& term : entry.terms) {
             erase_posting(field_it->second.terms, term, doc_id);
             erase_posting(index, term, doc_id);
+        }
+        if (auto length_it = field_it->second.lengths.find(doc_id); length_it != field_it->second.lengths.end()) {
+            field_it->second.total_length -= length_it->second;
+            field_it->second.lengths.erase(length_it);
         }
         if (--field_it->second.documents == 0) {
             fields.erase(field_it);
@@ -125,4 +133,21 @@ std::vector<TermPostings> InvertedIndex::terms_with_prefix(std::string_view fiel
 int InvertedIndex::get_field_documents(std::string_view field) const {
     auto it = fields.find(field);
     return it == fields.end() ? 0 : it->second.documents;
+}
+
+int InvertedIndex::get_field_length(std::string_view field, int doc_id) const {
+    auto field_it = fields.find(field);
+    if (field_it == fields.end()) {
+        return 0;
+    }
+    auto it = field_it->second.lengths.find(doc_id);
+    return it == field_it->second.lengths.end() ? 0 : it->second;
+}
+
+double InvertedIndex::get_average_field_length(std::string_view field) const {
+    auto it = fields.find(field);
+    if (it == fields.end() || it->second.documents == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(it->second.total_length) / it->second.documents;
 }

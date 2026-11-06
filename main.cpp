@@ -34,16 +34,16 @@ std::string read_file(const std::filesystem::path& path) {
 int index_folder(Indexer& indexer, const std::filesystem::path& folder) {
     int count = 0;
     for (const std::filesystem::path& path : find_text_files(folder)) {
-        indexer.add_document(make_text_document(path.stem().string(), read_file(path)));
+        indexer.add_document(path.filename().string(), make_text_document(path.stem().string(), read_file(path)));
         count++;
     }
     return count;
 }
 
 void index_samples(Indexer& indexer) {
-    indexer.add_document(make_text_document("Apache Lucene Overview", "LuxCore is a text search engine written in C++."));
-    indexer.add_document(make_text_document("Writing Search Engines", "A custom search engine needs an inverted index."));
-    indexer.add_document(make_text_document("Lorem Epsum", "Edgerunners 2 was a great show. Must watch."));
+    indexer.add_document("sample-1", make_text_document("Apache Lucene Overview", "LuxCore is a text search engine written in C++."));
+    indexer.add_document("sample-2", make_text_document("Writing Search Engines", "A custom search engine needs an inverted index."));
+    indexer.add_document("sample-3", make_text_document("Lorem Epsum", "Edgerunners 2 was a great show. Must watch."));
 }
 
 std::string title_of(const Indexer& indexer, int doc_id) {
@@ -63,7 +63,7 @@ void print_hits(const Indexer& indexer, const std::vector<SearchHit>& hits) {
         std::cout << "No results\n";
     }
     for (const SearchHit& hit : hits) {
-        std::cout << "  doc " << hit.doc_id << "  score " << hit.score << "  "
+        std::cout << "  " << hit.key << "  score " << hit.score << "  "
                   << title_of(indexer, hit.doc_id) << "\n";
     }
 }
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     std::cout << "Documents: " << index.get_total_documents()
               << ", unique terms: " << index.get_unique_terms_count() << "\n";
 
-    Searcher searcher(index, indexer.get_analyzer());
+    Searcher searcher(index, indexer.get_analyzer(), FieldBoosts::standard(), &indexer.get_keys());
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Type a query and press Enter (empty line to quit)\n> ";
