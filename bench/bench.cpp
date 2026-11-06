@@ -310,6 +310,13 @@ int main(int argc, char** argv) {
     std::cout << "corpus docs=" << options.docs << " vocab=" << options.vocab << " stop=" << options.stop
               << " index_terms=" << indexer.get_index().get_unique_terms_count()
               << " build_ms=" << build_ms << "\n";
+    const IndexMemory memory = indexer.get_index().memory_usage();
+    std::cout << "memory postings_mb=" << static_cast<double>(memory.posting_bytes) / 1048576.0
+              << " positions_mb=" << static_cast<double>(memory.position_bytes) / 1048576.0
+              << " positions_share_pct="
+              << 100.0 * static_cast<double>(memory.position_bytes) /
+                     static_cast<double>(memory.posting_bytes + memory.position_bytes)
+              << "\n";
     std::cout << "fuzzy=" << options.fuzzy << "\n";
     std::cout << "workload queries=" << options.queries << " keystrokes=" << keystrokes.size()
               << " passes=" << options.passes << " seed=" << options.seed << "\n";
