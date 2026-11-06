@@ -7,15 +7,51 @@ namespace {
 
 constexpr double completion_weight = 0.5;
 
+struct Scope {
+    const InvertedIndex& index;
+    const FieldBoosts& boosts;
+    std::optional<std::string_view> field;
+
+    const std::vector<Posting>* postings(const std::string& term) const {
+        return field ? index.get_postings(*field, term) : index.get_postings(term);
+    }
+
+    std::vector<TermPostings> terms_with_prefix(std::string_view prefix) const {
+        return field ? index.terms_with_prefix(*field, prefix) : index.terms_with_prefix(prefix);
+    }
+
+    int documents() const {
+        return field ? index.get_field_documents(*field) : index.get_total_documents();
+    }
+
+    template <typename Visit>
+    void for_each_field_postings(const std::string& term, Visit&& visit) const {
+        if (field) {
+            if (const std::vector<Posting>* found = index.get_postings(*field, term)) {
+                visit(*found, boosts.get(*field));
+            }
+            return;
+        }
+        for (const FieldPostings& entry : index.get_field_postings(term)) {
+            visit(*entry.postings, boosts.get(entry.field));
+        }
+    }
+};
+
+struct PrefixRun {
+    const std::vector<Posting>* postings;
+    double weight;
+    bool exact;
+};
+
 struct PrefixExpansion {
-    const std::vector<Posting>* exact;
-    std::vector<TermPostings> completions;
+    std::vector<PrefixRun> runs;
 };
 
 struct PrefixTally {
     int doc_id;
-    int exact_tf = 0;
-    int completion_tf = 0;
+    double exact_tf = 0;
+    double completion_tf = 0;
 };
 
 std::size_t max_completions(std::size_t prefix_length) {
@@ -32,26 +68,36 @@ double idf(int total_docs, std::size_t doc_freq) {
     return std::log(static_cast<double>(total_docs + 1) / (doc_freq + 1)) + 1.0;
 }
 
-PrefixExpansion expand(const InvertedIndex& index, const std::string& prefix) {
-    PrefixExpansion expansion{index.get_postings(prefix), {}};
+bool more_common(const TermPostings& a, const TermPostings& b) {
+    if (a.postings->size() != b.postings->size()) {
+        return a.postings->size() > b.postings->size();
+    }
+    return a.term < b.term;
+}
+
+PrefixExpansion expand(const Scope& scope, const std::string& prefix) {
+    PrefixExpansion expansion;
+    auto add_runs = [&](const std::string& term, bool exact) {
+        scope.for_each_field_postings(term, [&](const std::vector<Posting>& postings, double weight) {
+            expansion.runs.push_back({&postings, weight, exact});
+        });
+    };
+    add_runs(prefix, true);
 
     const std::size_t limit = max_completions(utf8::count_code_points(prefix));
     if (limit == 0) {
         return expansion;
     }
 
-    expansion.completions = index.terms_with_prefix(prefix);
-    std::erase_if(expansion.completions, [&prefix](const TermPostings& match) { return match.term == prefix; });
+    std::vector<TermPostings> completions = scope.terms_with_prefix(prefix);
+    std::erase_if(completions, [&prefix](const TermPostings& match) { return match.term == prefix; });
 
-    if (expansion.completions.size() > limit) {
-        std::partial_sort(expansion.completions.begin(), expansion.completions.begin() + limit,
-                          expansion.completions.end(), [](const TermPostings& a, const TermPostings& b) {
-            if (a.postings->size() != b.postings->size()) {
-                return a.postings->size() > b.postings->size();
-            }
-            return a.term < b.term;
-        });
-        expansion.completions.resize(limit);
+    if (completions.size() > limit) {
+        std::partial_sort(completions.begin(), completions.begin() + limit, completions.end(), more_common);
+        completions.resize(limit);
+    }
+    for (const TermPostings& completion : completions) {
+        add_runs(std::string(completion.term), false);
     }
     return expansion;
 }
@@ -74,29 +120,20 @@ PrefixTally* merge_runs(const PrefixTally* a, const PrefixTally* a_end,
 }
 
 std::vector<PrefixTally> merge_postings(const PrefixExpansion& expansion) {
-    std::size_t total_postings = expansion.exact ? expansion.exact->size() : 0;
-    for (const TermPostings& completion : expansion.completions) {
-        total_postings += completion.postings->size();
+    std::size_t total_postings = 0;
+    for (const PrefixRun& run : expansion.runs) {
+        total_postings += run.postings->size();
     }
 
     std::vector<PrefixTally> tallies(total_postings);
     std::vector<std::size_t> bounds{0};
-    auto add_run = [&](const std::vector<Posting>& postings, bool exact) {
-        if (postings.empty()) {
-            return;
-        }
+    for (const PrefixRun& run : expansion.runs) {
         PrefixTally* out = tallies.data() + bounds.back();
-        for (const Posting& posting : postings) {
-            *out++ = exact ? PrefixTally{posting.doc_id, posting.term_frequency, 0}
-                           : PrefixTally{posting.doc_id, 0, posting.term_frequency};
+        for (const Posting& posting : *run.postings) {
+            const double tf = posting.term_frequency * run.weight;
+            *out++ = run.exact ? PrefixTally{posting.doc_id, tf, 0} : PrefixTally{posting.doc_id, 0, tf};
         }
-        bounds.push_back(bounds.back() + postings.size());
-    };
-    if (expansion.exact) {
-        add_run(*expansion.exact, true);
-    }
-    for (const TermPostings& completion : expansion.completions) {
-        add_run(*completion.postings, false);
+        bounds.push_back(bounds.back() + run.postings->size());
     }
 
     std::vector<PrefixTally> scratch(bounds.size() > 2 ? total_postings : 0);
@@ -140,23 +177,37 @@ std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total
 
 }
 
-Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer)
-    : inverted_index(index), analyzer(analyzer) {}
+Searcher::Searcher(const InvertedIndex& index, const Analyzer& analyzer, FieldBoosts boosts)
+    : inverted_index(index), analyzer(analyzer), boosts(std::move(boosts)) {}
 
 std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::size_t limit) const {
+    return suggest_scoped(query_string, std::nullopt, limit);
+}
+
+std::vector<Suggestion> Searcher::suggest_in(std::string_view field, const std::string& query_string,
+                                             std::size_t limit) const {
+    return suggest_scoped(query_string, field, limit);
+}
+
+std::vector<SearchHit> Searcher::search(const std::string& query_string, int top_k) const {
+    return search_scoped(query_string, std::nullopt, top_k);
+}
+
+std::vector<SearchHit> Searcher::search_in(std::string_view field, const std::string& query_string, int top_k) const {
+    return search_scoped(query_string, field, top_k);
+}
+
+std::vector<Suggestion> Searcher::suggest_scoped(const std::string& query_string,
+                                                 std::optional<std::string_view> field, std::size_t limit) const {
     const AnalyzedQuery query = analyzer.analyze_query(query_string);
     if (!query.prefix) {
         return {};
     }
 
-    std::vector<TermPostings> matches = inverted_index.terms_with_prefix(*query.prefix);
+    const Scope scope{inverted_index, boosts, field};
+    std::vector<TermPostings> matches = scope.terms_with_prefix(*query.prefix);
     const auto kept = matches.begin() + std::min(limit, matches.size());
-    std::partial_sort(matches.begin(), kept, matches.end(), [](const TermPostings& a, const TermPostings& b) {
-        if (a.postings->size() != b.postings->size()) {
-            return a.postings->size() > b.postings->size();
-        }
-        return a.term < b.term;
-    });
+    std::partial_sort(matches.begin(), kept, matches.end(), more_common);
 
     std::vector<Suggestion> suggestions;
     suggestions.reserve(kept - matches.begin());
@@ -166,27 +217,34 @@ std::vector<Suggestion> Searcher::suggest(const std::string& query_string, std::
     return suggestions;
 }
 
-std::vector<SearchHit> Searcher::search(const std::string& query_string, int top_k) const {
+std::vector<SearchHit> Searcher::search_scoped(const std::string& query_string,
+                                               std::optional<std::string_view> field, int top_k) const {
     AnalyzedQuery query = analyzer.analyze_query(query_string);
+    const Scope scope{inverted_index, boosts, field};
     std::unordered_map<int, double> doc_scores;
-    int total_docs = inverted_index.get_total_documents();
+    std::unordered_map<int, double> weighted_tfs;
+    int total_docs = scope.documents();
 
     for (const auto& term : query.terms) {
-        const std::vector<Posting>* postings = inverted_index.get_postings(term);
+        const std::vector<Posting>* postings = scope.postings(term);
         if (!postings) continue;
 
-        int doc_freq = postings->size();
-        double term_idf = idf(total_docs, doc_freq);
+        double term_idf = idf(total_docs, postings->size());
 
-        for (const auto& posting : *postings) {
-            double tf = static_cast<double>(posting.term_frequency);
-            doc_scores[posting.doc_id] += tf * term_idf;
+        weighted_tfs.clear();
+        scope.for_each_field_postings(term, [&](const std::vector<Posting>& field_postings, double weight) {
+            for (const auto& posting : field_postings) {
+                weighted_tfs[posting.doc_id] += static_cast<double>(posting.term_frequency) * weight;
+            }
+        });
+        for (const auto& [doc_id, tf] : weighted_tfs) {
+            doc_scores[doc_id] += tf * term_idf;
         }
     }
 
     std::vector<SearchHit> results;
     if (query.prefix) {
-        results = prefix_scores(expand(inverted_index, *query.prefix), total_docs);
+        results = prefix_scores(expand(scope, *query.prefix), total_docs);
     }
 
     if (!doc_scores.empty()) {
