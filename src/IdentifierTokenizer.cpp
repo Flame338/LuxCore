@@ -118,18 +118,23 @@ bool splits_before(const std::vector<Unit>& units, std::size_t i, const Identifi
     return lower_follows && (previous == Kind::upper || previous == Kind::digit);
 }
 
-std::vector<std::string> split_words(const std::string& token, const IdentifierOptions& options) {
+struct Span {
+    std::size_t start;
+    std::size_t end;
+};
+
+std::vector<Span> split_words(const std::string& token, const IdentifierOptions& options) {
     const std::vector<Unit> units = classify_units(token);
 
-    std::vector<std::string> words;
+    std::vector<Span> words;
     std::size_t start = 0;
     for (std::size_t i = 1; i < units.size(); i++) {
         if (splits_before(units, i, options)) {
-            words.emplace_back(token, start, units[i].offset - start);
+            words.push_back({start, units[i].offset});
             start = units[i].offset;
         }
     }
-    words.emplace_back(token, start, token.size() - start);
+    words.push_back({start, token.size()});
     return words;
 }
 
@@ -137,16 +142,20 @@ std::vector<std::string> split_words(const std::string& token, const IdentifierO
 
 IdentifierTokenizer::IdentifierTokenizer(IdentifierOptions options) : options(options) {}
 
-std::vector<std::string> IdentifierTokenizer::tokenize(const std::string& text) const {
-    std::vector<std::string> tokens;
-    for (std::string& token : base.tokenize(text)) {
-        std::vector<std::string> words = split_words(token, options);
+std::vector<Token> IdentifierTokenizer::tokenize_tokens(const std::string& text) const {
+    std::vector<Token> tokens;
+    std::size_t position = 0;
+    for (const Token& token : base.tokenize_tokens(text)) {
+        const std::vector<Span> words = split_words(token.term, options);
         if (words.size() > 1 && options.keep_original) {
-            tokens.push_back(std::move(token));
+            tokens.push_back({token.term, position, token.start_offset, token.end_offset});
         }
-        for (std::string& word : words) {
-            tokens.push_back(std::move(word));
+        for (std::size_t i = 0; i < words.size(); i++) {
+            tokens.push_back({token.term.substr(words[i].start, words[i].end - words[i].start),
+                              position + i, token.start_offset + words[i].start,
+                              token.start_offset + words[i].end});
         }
+        position += words.size();
     }
     return tokens;
 }

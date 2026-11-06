@@ -59,18 +59,23 @@ bool is_inner_apostrophe(const std::string& text, utf8::Decoded current, std::si
            classify(utf8::decode(text, next).code_point) == CharClass::word;
 }
 
-void flush(std::vector<std::string>& tokens, std::string& token) {
-    if (!token.empty()) {
-        tokens.push_back(std::move(token));
-        token.clear();
-    }
+void emit(std::vector<Token>& tokens, const std::string& text, std::size_t start, std::size_t end) {
+    tokens.push_back({text.substr(start, end - start), tokens.size(), start, end});
 }
 
 }
 
-std::vector<std::string> StandardTokenizer::tokenize(const std::string& text) const {
-    std::vector<std::string> tokens;
-    std::string current_token;
+std::vector<Token> StandardTokenizer::tokenize_tokens(const std::string& text) const {
+    std::vector<Token> tokens;
+    std::size_t word_start = 0;
+    std::size_t word_end = 0;
+
+    const auto flush = [&] {
+        if (word_end > word_start) {
+            emit(tokens, text, word_start, word_end);
+        }
+        word_start = word_end = 0;
+    };
 
     for (std::size_t i = 0; i < text.size();) {
         const utf8::Decoded current = utf8::decode(text, i);
@@ -78,23 +83,26 @@ std::vector<std::string> StandardTokenizer::tokenize(const std::string& text) co
 
         switch (classify(current.code_point)) {
             case CharClass::word:
-                current_token.append(text, i, current.length);
+                if (word_end == word_start) {
+                    word_start = i;
+                }
+                word_end = next;
                 break;
             case CharClass::standalone:
-                flush(tokens, current_token);
-                tokens.emplace_back(text, i, current.length);
+                flush();
+                emit(tokens, text, i, next);
                 break;
             case CharClass::separator:
-                if (is_inner_apostrophe(text, current, next, !current_token.empty())) {
-                    current_token.append(text, i, current.length);
+                if (is_inner_apostrophe(text, current, next, word_end > word_start)) {
+                    word_end = next;
                 } else {
-                    flush(tokens, current_token);
+                    flush();
                 }
                 break;
         }
         i = next;
     }
 
-    flush(tokens, current_token);
+    flush();
     return tokens;
 }
