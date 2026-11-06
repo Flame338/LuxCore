@@ -41,3 +41,16 @@ Results are collected with a bounded priority queue that keeps the best `top_k` 
 ### Positions
 
 The field index keeps the positions of every term occurrence next to its postings. A `PostingList` holds the sorted postings, one offset per posting, and one flat pool of positions that the offsets point into. The combined index used by `Searcher` keeps plain postings without positions. On the 100k document bench corpus the positions take 19 MB next to 38 MB of postings, and the peak working set grows from about 246 MB to 269 MB.
+
+## Highlighting
+
+`Highlighter(analyzer, options).snippet(stored_text, query_string)` returns the part of a stored text that best shows why it matched, with the matching words wrapped in markers. `snippet(document, field, query_string)` does the same for a stored field and returns an empty string when the document has no such field.
+
+- `HighlightOptions::length` is the snippet length in Unicode code points and defaults to 160. Markers and ellipsis are not counted, and a cut never falls inside a UTF-8 sequence.
+- `start_marker` and `end_marker` default to `<em>` and `</em>`. `ellipsis` defaults to `...` and is added at each edge where the text was cut. An empty string turns it off.
+- The query goes through `Analyzer::analyze_query_tokens` and the stored text through `Analyzer::analyze_tokens`. A text token is marked when its term equals a query term, or starts with the unfinished last word of the query, as `Searcher::search` expands it. Marks cover the original bytes through the token start and end offsets, so `cafe` marks `Café`.
+- Tokens that overlap or touch are merged into one mark, so the CJK query `东京` marks both characters in one span and an identifier kept whole next to its parts is marked once.
+- A text that fits in `length` comes back whole. Otherwise the window starts a quarter of `length` before a match, and the window covering the most distinct query terms wins, then the most matches, then the earliest. With no match the snippet is the beginning of the text, unmarked.
+- A match cut by the window edge is marked up to the edge. An empty query or an empty text gives the text or an empty string, unmarked.
+
+Choosing the window is one two-pointer pass over the matches, so a large text with many matches stays cheap. A text of 1.2 MB with 300,000 matches took about 35 ms in a release build. Known limits: the snippet is the text as stored, so it can start or end inside a word. Only one window is returned, never several fragments. Query structure such as `AND`, `NOT` or phrases is not read, since the query string is analyzed as plain words. Words that only a fuzzy search matched are not marked. A `length` of 0 returns only the ellipsis.
