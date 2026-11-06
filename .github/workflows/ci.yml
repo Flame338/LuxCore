@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.compiler }} ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+        mode: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run tests
+        run: make test CXX=${{ matrix.compiler }} MODE=${{ matrix.mode }} EXTRA_CXXFLAGS=-Werror
+      - name: Build app and benchmark
+        run: make build/${{ matrix.mode }}/luxcore build/${{ matrix.mode }}/luxbench CXX=${{ matrix.compiler }} MODE=${{ matrix.mode }} EXTRA_CXXFLAGS=-Werror
