@@ -4,6 +4,8 @@
 #include "Highlighter.h"
 #include "IdentifierTokenizer.h"
 #include "Indexer.h"
+#include "InvertedIndex.h"
+#include "MatchPlan.h"
 #include "Query.h"
 #include "QueryParser.h"
 #include "Searcher.h"
@@ -52,14 +54,30 @@ HighlightOptions bracketed(std::size_t length) {
     return {.length = length, .start_marker = "[", .end_marker = "]", .ellipsis = "~"};
 }
 
-std::string snippet_of(const std::string& text, const std::string& query, HighlightOptions options = {}) {
-    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    return Highlighter(analyzer, std::move(options)).snippet(text, query);
+TermFreqs term_freqs_of(const Analyzer& analyzer, const std::string& text) {
+    TermFreqs freqs;
+    for (const std::string& token : analyzer.analyze(text)) {
+        freqs[token]++;
+    }
+    return freqs;
 }
 
-HighlightOptions fuzzy(HighlightOptions options = {}) {
-    options.fuzziness = Fuzziness::On;
-    return options;
+std::string snippet_with(const Analyzer& analyzer, const std::string& text, const std::string& query,
+                         HighlightOptions options = {}, Fuzziness fuzziness = Fuzziness::Off) {
+    InvertedIndex index;
+    index.add_document(0, FieldTermFreqs{{"body", term_freqs_of(analyzer, text)}});
+    const Searcher searcher(index, analyzer, FieldBoosts::standard(), nullptr, Scoring::tf_idf(), fuzziness);
+    return Highlighter(std::move(options)).snippet(text, searcher.plan(query));
+}
+
+std::string snippet_of(const std::string& text, const std::string& query, HighlightOptions options = {}) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    return snippet_with(analyzer, text, query, std::move(options));
+}
+
+std::string fuzzy_snippet_of(const std::string& text, const std::string& query, HighlightOptions options = {}) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    return snippet_with(analyzer, text, query, std::move(options), Fuzziness::On);
 }
 
 std::string snippet_for_query(const std::string& text, const std::string& query_text,
@@ -67,13 +85,13 @@ std::string snippet_for_query(const std::string& text, const std::string& query_
                               HighlightOptions options = {}) {
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
     const ParseResult parsed = QueryParser(analyzer).parse(query_text);
-    return Highlighter(analyzer, std::move(options)).snippet(text, *parsed.query, field);
+    return Highlighter(std::move(options)).snippet(text, make_match_plan(analyzer, *parsed.query, field));
 }
 
 std::string snippet_for_built_query(const std::string& text, const Query& query,
                                     std::optional<std::string_view> field = std::nullopt) {
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    return Highlighter(analyzer).snippet(text, query, field);
+    return Highlighter().snippet(text, make_match_plan(analyzer, query, field));
 }
 
 std::unique_ptr<Query> term(const std::string& text, std::optional<std::string> field = std::nullopt) {
@@ -158,16 +176,14 @@ TEST(highlight_marks_a_single_cjk_character) {
 
 TEST(highlight_overlapping_identifier_tokens_give_one_mark) {
     const Analyzer analyzer = make_identifier_analyzer({.keep_original = true, .split_letters_digits = true});
-    const Highlighter highlighter(analyzer);
-    CHECK_EQ(highlighter.snippet("call getUserName now", "getUserName "), "call <em>getUserName</em> now");
-    CHECK_EQ(highlighter.snippet("call getUserName2 now", "getUserName2 "), "call <em>getUserName2</em> now");
+    CHECK_EQ(snippet_with(analyzer, "call getUserName now", "getUserName "), "call <em>getUserName</em> now");
+    CHECK_EQ(snippet_with(analyzer, "call getUserName2 now", "getUserName2 "), "call <em>getUserName2</em> now");
 }
 
 TEST(highlight_marks_only_the_matching_part_of_an_identifier) {
     const Analyzer analyzer = make_identifier_analyzer({.keep_original = true, .split_letters_digits = true});
-    const Highlighter highlighter(analyzer);
-    CHECK_EQ(highlighter.snippet("getUserName", "user "), "get<em>User</em>Name");
-    CHECK_EQ(highlighter.snippet("getUserName", "get name "), "<em>get</em>User<em>Name</em>");
+    CHECK_EQ(snippet_with(analyzer, "getUserName", "user "), "get<em>User</em>Name");
+    CHECK_EQ(snippet_with(analyzer, "getUserName", "get name "), "<em>get</em>User<em>Name</em>");
 }
 
 TEST(highlight_short_document_comes_back_whole_without_ellipsis) {
@@ -270,30 +286,34 @@ TEST(highlight_empty_text_gives_an_empty_snippet) {
 }
 
 TEST(highlight_document_overload_reads_the_named_field) {
-    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer);
+    Indexer indexer("stopwords.txt");
     const Document document = make_text_document("Fox tales", "A quick brown fox");
-    CHECK_EQ(highlighter.snippet(document, "body", "fox "), "A quick brown <em>fox</em>");
-    CHECK_EQ(highlighter.snippet(document, "title", "fox "), "<em>Fox</em> tales");
+    indexer.add_document("fox", document);
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer());
+    const Highlighter highlighter;
+    CHECK_EQ(highlighter.snippet(document, "body", searcher.plan("fox ")), "A quick brown <em>fox</em>");
+    CHECK_EQ(highlighter.snippet(document, "title", searcher.plan("fox ")), "<em>Fox</em> tales");
 }
 
 TEST(highlight_document_overload_returns_empty_for_a_missing_field) {
-    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer);
+    Indexer indexer("stopwords.txt");
     const Document document = make_text_document("Fox tales", "A quick brown fox");
-    CHECK_EQ(highlighter.snippet(document, "summary", "fox "), "");
+    indexer.add_document("fox", document);
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer());
+    CHECK_EQ(Highlighter().snippet(document, "summary", searcher.plan("fox ")), "");
 }
 
-TEST(highlight_query_overloads_resolve_with_string_literals) {
-    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer);
-    const TermQuery query("fox");
+TEST(highlight_one_highlighter_serves_text_plans_and_query_tree_plans) {
+    Indexer indexer("stopwords.txt");
     const Document document = make_text_document("Fox tales", "A quick brown fox");
-    CHECK_EQ(highlighter.snippet("a fox runs", "fox "), "a <em>fox</em> runs");
-    CHECK_EQ(highlighter.snippet("a fox runs", query), "a <em>fox</em> runs");
-    CHECK_EQ(highlighter.snippet("a fox runs", query, "body"), "a <em>fox</em> runs");
-    CHECK_EQ(highlighter.snippet(document, "body", "fox "), "A quick brown <em>fox</em>");
-    CHECK_EQ(highlighter.snippet(document, "body", query), "A quick brown <em>fox</em>");
+    indexer.add_document("fox", document);
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer());
+    const Highlighter highlighter;
+    const TermQuery query("fox");
+    const MatchPlan tree_plan = make_match_plan(indexer.get_analyzer(), query);
+    CHECK_EQ(highlighter.snippet("a fox runs", searcher.plan("fox ")), "a <em>fox</em> runs");
+    CHECK_EQ(highlighter.snippet("a fox runs", tree_plan), "a <em>fox</em> runs");
+    CHECK_EQ(highlighter.snippet(document, "body", tree_plan), "A quick brown <em>fox</em>");
 }
 
 TEST(highlight_query_term_is_compared_as_an_index_term_without_analysis) {
@@ -371,13 +391,15 @@ TEST(highlight_query_phrase_built_by_hand_uses_its_relative_positions) {
 
 TEST(highlight_query_phrase_finds_a_term_among_tokens_sharing_a_position) {
     const Analyzer analyzer = make_identifier_analyzer({.keep_original = true, .split_letters_digits = true});
-    const Highlighter highlighter(analyzer);
-    CHECK_EQ(highlighter.snippet("call getUserName now", PhraseQuery(std::vector<std::string>{"call", "get"})),
-             "<em>call</em> <em>get</em>UserName now");
-    CHECK_EQ(highlighter.snippet("call getUserName now", PhraseQuery(std::vector<std::string>{"call", "getusername"})),
+    const Highlighter highlighter;
+    const std::string text = "call getUserName now";
+    const PhraseQuery call_get(std::vector<std::string>{"call", "get"});
+    const PhraseQuery call_whole(std::vector<std::string>{"call", "getusername"});
+    const PhraseQuery call_user(std::vector<std::string>{"call", "user"});
+    CHECK_EQ(highlighter.snippet(text, make_match_plan(analyzer, call_get)), "<em>call</em> <em>get</em>UserName now");
+    CHECK_EQ(highlighter.snippet(text, make_match_plan(analyzer, call_whole)),
              "<em>call</em> <em>getUserName</em> now");
-    CHECK_EQ(highlighter.snippet("call getUserName now", PhraseQuery(std::vector<std::string>{"call", "user"})),
-             "call getUserName now");
+    CHECK_EQ(highlighter.snippet(text, make_match_plan(analyzer, call_user)), "call getUserName now");
 }
 
 TEST(highlight_query_window_prefers_a_complete_phrase_over_scattered_words) {
@@ -421,25 +443,28 @@ TEST(highlight_query_mixes_scoped_and_unscoped_terms) {
              "red <em>fox</em> and blue <em>bear</em>");
 }
 
-TEST(highlight_query_document_overload_scopes_to_the_named_field) {
+TEST(highlight_query_plan_scopes_to_its_field_for_the_document_overload) {
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer);
+    const Highlighter highlighter;
     const Document document = make_text_document("Fox tales", "A quick brown fox");
     const ParseResult title_query = QueryParser(analyzer).parse("title:fox");
-    CHECK_EQ(highlighter.snippet(document, "title", *title_query.query), "<em>Fox</em> tales");
-    CHECK_EQ(highlighter.snippet(document, "body", *title_query.query), "A quick brown fox");
+    CHECK_EQ(highlighter.snippet(document, "title", make_match_plan(analyzer, *title_query.query, "title")),
+             "<em>Fox</em> tales");
+    CHECK_EQ(highlighter.snippet(document, "body", make_match_plan(analyzer, *title_query.query, "body")),
+             "A quick brown fox");
 
     const ParseResult any_query = QueryParser(analyzer).parse("fox");
-    CHECK_EQ(highlighter.snippet(document, "title", *any_query.query), "<em>Fox</em> tales");
-    CHECK_EQ(highlighter.snippet(document, "body", *any_query.query), "A quick brown <em>fox</em>");
+    CHECK_EQ(highlighter.snippet(document, "title", make_match_plan(analyzer, *any_query.query, "title")),
+             "<em>Fox</em> tales");
+    CHECK_EQ(highlighter.snippet(document, "body", make_match_plan(analyzer, *any_query.query, "body")),
+             "A quick brown <em>fox</em>");
 }
 
 TEST(highlight_query_document_overload_returns_empty_for_a_missing_field) {
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer);
     const Document document = make_text_document("Fox tales", "A quick brown fox");
     const ParseResult parsed = QueryParser(analyzer).parse("fox");
-    CHECK_EQ(highlighter.snippet(document, "summary", *parsed.query), "");
+    CHECK_EQ(Highlighter().snippet(document, "summary", make_match_plan(analyzer, *parsed.query)), "");
 }
 
 TEST(highlight_query_follows_the_analyzer_for_accents) {
@@ -464,8 +489,8 @@ TEST(highlight_query_empty_boolean_gives_the_unmarked_beginning) {
     const BooleanQuery empty;
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
     const std::string text = "alpha beta gamma delta epsilon";
-    CHECK_EQ(Highlighter(analyzer).snippet(text, empty), text);
-    CHECK_EQ(Highlighter(analyzer, {.length = 12}).snippet(text, empty), "alpha beta g...");
+    CHECK_EQ(Highlighter().snippet(text, make_match_plan(analyzer, empty)), text);
+    CHECK_EQ(Highlighter({.length = 12}).snippet(text, make_match_plan(analyzer, empty)), "alpha beta g...");
     CHECK_EQ(snippet_for_query(text, "", std::nullopt, {.length = 12}), "alpha beta g...");
 }
 
@@ -484,111 +509,124 @@ TEST(highlight_query_of_an_unknown_kind_contributes_nothing) {
 
 TEST(highlight_query_and_string_paths_agree_on_a_plain_word) {
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer);
     const ParseResult parsed = QueryParser(analyzer).parse("fox");
-    CHECK_EQ(highlighter.snippet("The Fox runs", *parsed.query), highlighter.snippet("The Fox runs", "fox "));
+    CHECK_EQ(Highlighter().snippet("The Fox runs", make_match_plan(analyzer, *parsed.query)),
+             snippet_of("The Fox runs", "fox "));
 }
 
 TEST(highlight_fuzzy_is_off_by_default) {
     CHECK_EQ(snippet_of("A search engine", "serch "), "A search engine");
-    CHECK(HighlightOptions{}.fuzziness == Fuzziness::Off);
+
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    InvertedIndex index;
+    index.add_document(0, FieldTermFreqs{{"body", term_freqs_of(analyzer, "A search engine")}});
+    const Searcher exact(index, analyzer);
+    const Searcher fuzzy_searcher(index, analyzer, FieldBoosts::standard(), nullptr, Scoring::tf_idf(),
+                                  Fuzziness::On);
+    CHECK(!exact.plan("serch ").unit_of("search"));
+    CHECK(fuzzy_searcher.plan("serch ").unit_of("search"));
 }
 
 TEST(highlight_fuzzy_marks_the_word_a_typo_stands_for) {
-    CHECK_EQ(snippet_of("A search engine", "serch ", fuzzy()), "A <em>search</em> engine");
-    CHECK_EQ(snippet_of("A search engine", "saerch ", fuzzy()), "A <em>search</em> engine");
-    CHECK_EQ(snippet_of("A search engine", "serch engin ", fuzzy()), "A <em>search</em> <em>engine</em>");
+    CHECK_EQ(fuzzy_snippet_of("A search engine", "serch "), "A <em>search</em> engine");
+    CHECK_EQ(fuzzy_snippet_of("A search engine", "saerch "), "A <em>search</em> engine");
+    CHECK_EQ(fuzzy_snippet_of("A search engine", "serch engin "), "A <em>search</em> <em>engine</em>");
 }
 
 TEST(highlight_fuzzy_also_marks_a_typo_in_the_text) {
-    CHECK_EQ(snippet_of("A serch engine", "search ", fuzzy()), "A <em>serch</em> engine");
+    CHECK_EQ(fuzzy_snippet_of("A serch engine", "search "), "A <em>serch</em> engine");
 }
 
 TEST(highlight_fuzzy_keeps_marking_the_exact_word) {
-    CHECK_EQ(snippet_of("serch search", "serch ", fuzzy()), "<em>serch</em> <em>search</em>");
-    CHECK_EQ(snippet_of("The fox", "fox ", fuzzy()), "The <em>fox</em>");
+    CHECK_EQ(fuzzy_snippet_of("serch search", "serch "), "<em>serch</em> <em>search</em>");
+    CHECK_EQ(fuzzy_snippet_of("The fox", "fox "), "The <em>fox</em>");
 }
 
 TEST(highlight_fuzzy_never_applies_to_words_of_one_or_two_code_points) {
-    CHECK_EQ(snippet_of("an oz and ox", "ox ", fuzzy()), "an oz and <em>ox</em>");
-    CHECK_EQ(snippet_of("x y z", "y ", fuzzy()), "x <em>y</em> z");
+    CHECK_EQ(fuzzy_snippet_of("an oz and ox", "ox "), "an oz and <em>ox</em>");
+    CHECK_EQ(fuzzy_snippet_of("x y z", "y "), "x <em>y</em> z");
 }
 
 TEST(highlight_fuzzy_allows_one_edit_for_three_to_five_code_points) {
-    CHECK_EQ(snippet_of("cot cut cow", "cat ", fuzzy()), "<em>cot</em> <em>cut</em> cow");
-    CHECK_EQ(snippet_of("frut fract", "fruit ", fuzzy()), "<em>frut</em> fract");
+    CHECK_EQ(fuzzy_snippet_of("cot cut cow", "cat "), "<em>cot</em> <em>cut</em> cow");
+    CHECK_EQ(fuzzy_snippet_of("frut fract", "fruit "), "<em>frut</em> fract");
 }
 
 TEST(highlight_fuzzy_allows_two_edits_from_six_code_points) {
-    CHECK_EQ(snippet_of("orxnxe oxxnxe", "orange ", fuzzy()), "<em>orxnxe</em> oxxnxe");
+    CHECK_EQ(fuzzy_snippet_of("orxnxe oxxnxe", "orange "), "<em>orxnxe</em> oxxnxe");
 }
 
 TEST(highlight_fuzzy_does_not_mark_words_beyond_the_limit) {
-    CHECK_EQ(snippet_of("A garden with tomatoes", "serch ", fuzzy()), "A garden with tomatoes");
-    CHECK_EQ(snippet_of("A searching engine", "serch ", fuzzy()), "A searching engine");
+    CHECK_EQ(fuzzy_snippet_of("A garden with tomatoes", "serch "), "A garden with tomatoes");
+    CHECK_EQ(fuzzy_snippet_of("A searching engine", "serch "), "A searching engine");
 }
 
 TEST(highlight_fuzzy_repeated_query_word_gives_the_same_marks) {
-    CHECK_EQ(snippet_of("A search engine", "serch serch ", fuzzy()), "A <em>search</em> engine");
+    CHECK_EQ(fuzzy_snippet_of("A search engine", "serch serch "), "A <em>search</em> engine");
 }
 
 TEST(highlight_fuzzy_counts_a_query_word_and_its_typo_hits_as_one_distinct_term) {
     const std::string text = "serch search " + repeat("zz ", 100) + "serch engine " + repeat("zz ", 100);
-    const std::string snippet = snippet_of(text, "serch engine ", fuzzy(bracketed(40)));
+    const std::string snippet = fuzzy_snippet_of(text, "serch engine ", bracketed(40));
     CHECK(snippet.find("[serch] [engine]") != std::string::npos);
     CHECK(!snippet.starts_with("[serch] [search]"));
 }
 
 TEST(highlight_fuzzy_counts_fuzzy_and_exact_hits_of_different_words_as_distinct_terms) {
     const std::string text = "search search search " + repeat("zz ", 100) + "search engine " + repeat("zz ", 100);
-    const std::string snippet = snippet_of(text, "serch engine ", fuzzy(bracketed(40)));
+    const std::string snippet = fuzzy_snippet_of(text, "serch engine ", bracketed(40));
     CHECK(snippet.find("[search] [engine]") != std::string::npos);
     CHECK(!snippet.starts_with("[search] [search]"));
 }
 
 TEST(highlight_fuzzy_assigns_a_word_to_the_nearest_query_word) {
     const std::string text = "search seerch " + repeat("zz ", 100) + "serchx engine " + repeat("zz ", 100);
-    const std::string snippet = snippet_of(text, "serchx seerch engine ", fuzzy(bracketed(40)));
+    const std::string snippet = fuzzy_snippet_of(text, "serchx seerch engine ", bracketed(40));
     CHECK(snippet.find("[serchx] [engine]") != std::string::npos);
     CHECK(!snippet.starts_with("[search]"));
 }
 
 TEST(highlight_fuzzy_follows_the_analyzer_for_accents) {
     const std::string cafe_accented = "Caf" + E_ACUTE;
-    CHECK_EQ(snippet_of("A " + cafe_accented + " in town", "cafee ", fuzzy()),
+    CHECK_EQ(fuzzy_snippet_of("A " + cafe_accented + " in town", "cafee "),
              "A <em>" + cafe_accented + "</em> in town");
-    CHECK_EQ(snippet_of("A " + cafe_accented + " in town", "cafw ", fuzzy()),
+    CHECK_EQ(fuzzy_snippet_of("A " + cafe_accented + " in town", "cafw "),
              "A <em>" + cafe_accented + "</em> in town");
-    CHECK_EQ(snippet_of("A " + cafe_accented + " in town", "cafee ", {}), "A " + cafe_accented + " in town");
+    CHECK_EQ(snippet_of("A " + cafe_accented + " in town", "cafee "), "A " + cafe_accented + " in town");
 }
 
 TEST(highlight_fuzzy_leaves_a_cjk_query_as_it_was) {
     const std::string text = utf8_of(U"我住在东京很久了");
-    CHECK_EQ(snippet_of(text, utf8_of(U"东京"), fuzzy()), snippet_of(text, utf8_of(U"东京")));
-    CHECK_EQ(snippet_of(text, utf8_of(U"东 "), fuzzy()),
+    CHECK_EQ(fuzzy_snippet_of(text, utf8_of(U"东京")), snippet_of(text, utf8_of(U"东京")));
+    CHECK_EQ(fuzzy_snippet_of(text, utf8_of(U"东 ")),
              utf8_of(U"我住在") + "<em>" + utf8_of(U"东") + "</em>" + utf8_of(U"京很久了"));
 }
 
 TEST(highlight_fuzzy_does_not_touch_the_unfinished_last_word) {
-    CHECK_EQ(snippet_of("serch results and search", "serch", fuzzy()), "<em>serch</em> results and search");
-    CHECK_EQ(snippet_of("serch results and search", "serch ", fuzzy()),
+    CHECK_EQ(fuzzy_snippet_of("serch results and search", "serch"), "<em>serch</em> results and search");
+    CHECK_EQ(fuzzy_snippet_of("serch results and search", "serch "),
              "<em>serch</em> results and <em>search</em>");
-    CHECK_EQ(snippet_of("A search engine", "serch eng", fuzzy()), "A <em>search</em> <em>engine</em>");
+    CHECK_EQ(fuzzy_snippet_of("A search engine", "serch eng"), "A <em>search</em> <em>engine</em>");
 }
 
 TEST(highlight_fuzzy_applies_to_the_document_overload) {
-    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer, fuzzy());
+    Indexer indexer("stopwords.txt");
     const Document document = make_text_document("Search tales", "A quick brown fox");
-    CHECK_EQ(highlighter.snippet(document, "title", "serch "), "<em>Search</em> tales");
-    CHECK_EQ(highlighter.snippet(document, "body", "serch "), "A quick brown fox");
+    indexer.add_document("search", document);
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(), nullptr,
+                            Scoring::tf_idf(), Fuzziness::On);
+    const Highlighter highlighter;
+    CHECK_EQ(highlighter.snippet(document, "title", searcher.plan("serch ")), "<em>Search</em> tales");
+    CHECK_EQ(highlighter.snippet(document, "body", searcher.plan("serch ")), "A quick brown fox");
 }
 
 TEST(highlight_fuzzy_does_not_apply_to_a_query_tree) {
     const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
-    const Highlighter highlighter(analyzer, fuzzy());
-    CHECK_EQ(highlighter.snippet("A search engine", TermQuery("serch")), "A search engine");
-    CHECK_EQ(highlighter.snippet("A search engine", TermQuery("search")), "A <em>search</em> engine");
+    const Highlighter highlighter;
+    const TermQuery typo("serch");
+    const TermQuery exact("search");
+    CHECK_EQ(highlighter.snippet("A search engine", make_match_plan(analyzer, typo)), "A search engine");
+    CHECK_EQ(highlighter.snippet("A search engine", make_match_plan(analyzer, exact)), "A <em>search</em> engine");
 }
 
 TEST(highlight_fuzzy_marks_what_a_fuzzy_search_found) {
@@ -599,24 +637,112 @@ TEST(highlight_fuzzy_marks_what_a_fuzzy_search_found) {
     const Searcher exact(indexer.get_index(), indexer.get_analyzer());
     const Searcher fuzzy_searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
                                   &indexer.get_keys(), Scoring::tf_idf(), Fuzziness::On);
-    const Highlighter plain(indexer.get_analyzer());
-    const Highlighter fuzzy_highlighter(indexer.get_analyzer(), fuzzy());
+    const Highlighter highlighter;
 
     for (const std::string query : {"serch ", "engin ", "rankng ", "saerch engine "}) {
-        const std::vector<SearchHit> hits = fuzzy_searcher.search(query);
+        const TextPlan plan = fuzzy_searcher.plan(query);
+        const std::vector<SearchHit> hits = fuzzy_searcher.search(plan);
         CHECK_EQ(hits.size(), std::size_t{1});
         for (const SearchHit& hit : hits) {
             const Document& document = indexer.get_document(hit.doc_id);
             CHECK_EQ(hit.key, "engine");
-            const std::string title = fuzzy_highlighter.snippet(document, "title", query);
-            const std::string body = fuzzy_highlighter.snippet(document, "body", query);
+            const std::string title = highlighter.snippet(document, "title", plan);
+            const std::string body = highlighter.snippet(document, "body", plan);
             CHECK(title.find("<em>") != std::string::npos || body.find("<em>") != std::string::npos);
         }
     }
 
     CHECK(exact.search("serch ").empty());
-    CHECK(fuzzy_searcher.search("serch ").size() == 1);
-    const Document& engine = indexer.get_document(fuzzy_searcher.search("serch ").front().doc_id);
-    CHECK_EQ(fuzzy_highlighter.snippet(engine, "title", "serch "), "<em>Search</em> engine");
-    CHECK_EQ(plain.snippet(engine, "title", "serch "), "Search engine");
+    const TextPlan plan = fuzzy_searcher.plan("serch ");
+    CHECK(fuzzy_searcher.search(plan).size() == 1);
+    const Document& engine = indexer.get_document(fuzzy_searcher.search(plan).front().doc_id);
+    CHECK_EQ(highlighter.snippet(engine, "title", plan), "<em>Search</em> engine");
+    CHECK_EQ(highlighter.snippet(engine, "title", exact.plan("serch ")), "Search engine");
+}
+
+TEST(highlight_fuzzy_marks_only_the_candidates_the_search_kept) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    std::string kept_words;
+    for (char letter = 'b'; letter <= 'u'; letter++) {
+        kept_words += std::string("serch") + letter + " ";
+    }
+    const std::string text = kept_words + "serchz";
+
+    InvertedIndex index;
+    index.add_document(0, FieldTermFreqs{{"body", term_freqs_of(analyzer, text)}});
+    index.add_document(1, FieldTermFreqs{{"body", term_freqs_of(analyzer, kept_words)}});
+    index.add_document(2, FieldTermFreqs{{"body", term_freqs_of(analyzer, kept_words)}});
+    index.add_document(3, FieldTermFreqs{{"body", term_freqs_of(analyzer, "serchz")}});
+    const Searcher searcher(index, analyzer, FieldBoosts::standard(), nullptr, Scoring::tf_idf(), Fuzziness::On);
+
+    const TextPlan plan = searcher.plan("serch ");
+    std::vector<int> found;
+    for (const SearchHit& hit : searcher.search(plan)) {
+        found.push_back(hit.doc_id);
+    }
+    CHECK(std::ranges::find(found, 3) == found.end());
+
+    const std::string snippet = Highlighter(bracketed(1000)).snippet(text, plan);
+    CHECK(snippet.find("[serchb]") != std::string::npos);
+    CHECK(snippet.find("[serchu]") != std::string::npos);
+    CHECK(snippet.find("[serchz]") == std::string::npos);
+    CHECK(snippet.find("serchz") != std::string::npos);
+    CHECK_EQ(std::ranges::count(snippet, '['), 20);
+}
+
+TEST(highlight_one_code_point_prefix_marks_only_the_exact_word) {
+    CHECK_EQ(snippet_of("q qux quick", "q"), "<em>q</em> qux quick");
+    CHECK_EQ(snippet_of("qux quick", "q"), "qux quick");
+}
+
+TEST(highlight_two_code_point_prefix_marks_only_the_four_most_common_completions) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const std::string text = "pad pal pan pat pay pax";
+    InvertedIndex index;
+    index.add_document(0, FieldTermFreqs{{"body", term_freqs_of(analyzer, text)}});
+    index.add_document(1, FieldTermFreqs{{"body", term_freqs_of(analyzer, "pay pax")}});
+    index.add_document(2, FieldTermFreqs{{"body", term_freqs_of(analyzer, "pay")}});
+    const Searcher searcher(index, analyzer);
+
+    CHECK_EQ(Highlighter().snippet(text, searcher.plan("pa")),
+             "<em>pad</em> <em>pal</em> pan pat <em>pay</em> <em>pax</em>");
+}
+
+TEST(highlight_three_code_point_prefix_marks_at_most_thirty_two_completions) {
+    std::string text;
+    for (char first = 'a'; first <= 'z'; first++) {
+        text += std::string("tre") + first + "x ";
+    }
+    for (char first = 'a'; first <= 'g'; first++) {
+        text += std::string("tre") + first + "y ";
+    }
+    const std::string snippet = snippet_of(text, "tre", bracketed(1000));
+    CHECK_EQ(std::ranges::count(snippet, '['), 32);
+    CHECK(snippet.find("[treax]") != std::string::npos);
+    CHECK(snippet.find("[trezx]") == std::string::npos);
+}
+
+TEST(highlight_prefix_completions_count_as_one_distinct_term_apart_from_the_finished_words) {
+    const std::string text = "pad " + repeat("zz ", 100) + "pad pat " + repeat("zz ", 100);
+    const std::string snippet = snippet_of(text, "pad pa", bracketed(40));
+    CHECK(snippet.find("[pad] [pat]") != std::string::npos);
+}
+
+TEST(highlight_field_scoped_plan_marks_completions_chosen_from_that_field) {
+    const Analyzer analyzer = make_standard_analyzer("stopwords.txt");
+    const std::string text = "pad pal pan pat pay pax";
+    InvertedIndex index;
+    index.add_document(0, FieldTermFreqs{{"title", term_freqs_of(analyzer, "pad pal pan pat pay")},
+                                         {"body", term_freqs_of(analyzer, "pax")}});
+    index.add_document(1, FieldTermFreqs{{"body", term_freqs_of(analyzer, "pax")}});
+    index.add_document(2, FieldTermFreqs{{"body", term_freqs_of(analyzer, "pax")}});
+    const Searcher searcher(index, analyzer);
+    const Highlighter highlighter;
+
+    CHECK_EQ(highlighter.snippet(text, searcher.plan("pa")),
+             "<em>pad</em> <em>pal</em> <em>pan</em> pat pay <em>pax</em>");
+    CHECK_EQ(highlighter.snippet(text, searcher.plan("pa", "title")),
+             "<em>pad</em> <em>pal</em> <em>pan</em> <em>pat</em> pay pax");
+    CHECK_EQ(highlighter.snippet(text, searcher.plan("pa", "body")),
+             "pad pal pan pat pay <em>pax</em>");
 }
