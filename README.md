@@ -2,6 +2,48 @@
 
 A copy of Apache Lucene built for learning purposes
 
+## What LuxCore is
+
+An embeddable, zero-dependency C++20 library for instant, typo-tolerant, search-as-you-type over small local corpora such as app content, notes, game text and command palettes. It needs only the C++ standard library.
+
+Lucene is built for servers, clusters and huge corpora. LuxCore is the small version of the same ideas: an inverted index, analyzers, BM25 scoring, fuzzy matching and highlighting, kept in memory in one process.
+
+## What LuxCore is not
+
+- Not a server. There is no network layer, no sharding and no replication.
+- Not built for large corpora. The index lives in memory.
+- Not persistent yet. An index is rebuilt each run until saving and loading lands.
+- Not thread safe yet. Do not search while another thread adds or removes documents.
+- Not a drop-in for Lucene. The names and file formats differ.
+
+## Quick start
+
+```cpp
+luxcore::Index index;
+index.add("note-1", "Shopping list", "milk, eggs, bread and butter");
+for (const luxcore::Hit& hit : index.search("shoping lis")) std::cout << hit.key << "\n";
+```
+
+`make lib` builds `build/<mode>/libluxcore.a`. Compile your code with `-I<luxcore>/api`, include `LuxCore.h`, and link the library. `api/` holds the only public header. `include/` holds internals that the library uses and embedders do not need.
+
+`make example` builds `examples/search.cpp` against `libluxcore.a` with only `api/` on the include path, then runs it. Pass a query with `make example ARGS="brea"`.
+
+### Public API
+
+`luxcore::Index` in `api/LuxCore.h`:
+
+- `add(key, title, body)` adds a document under a string key. Adding an existing key replaces that document. An empty key throws `std::invalid_argument`.
+- `remove(key)` returns whether the key was present. `size()` is the number of documents.
+- `search(query, limit = 10)` returns `Hit`s with `key` and `score`, best first. Searches use BM25 with a boost on `title`, match the unfinished last word as a prefix, and tolerate typos in the finished words.
+- `suggest(query, limit = 5)` returns completions of the unfinished last word, most common first.
+- `stored(key, field)` returns the stored `title` or `body` text, or nothing when the key or field is unknown.
+
+The public `Index` uses no stop words, so it never reads a file from the working directory. For stop words, highlighting, field-scoped search or query trees, use the classes in `include/` directly.
+
+### Size and build time
+
+`make stats` rebuilds the release library and the example from scratch and prints the build time and file sizes. CI runs it on g++ release and adds the numbers to the job summary. On the developer machine (g++ 16.1 on Windows, one job) it measured 16.6 s, 528 KB for `libluxcore.a` and 2.9 MB for the statically linked example executable.
+
 ## Document keys
 
 Applications identify a document by a string key. The index identifies it by an internal `int` id, as Lucene separates the application key from the internal doc id.

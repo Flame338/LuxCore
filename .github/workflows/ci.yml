@@ -24,3 +24,8 @@ jobs:
         run: make test CXX=${{ matrix.compiler }} MODE=${{ matrix.mode }} EXTRA_CXXFLAGS=-Werror
       - name: Build app and benchmark
         run: make build/${{ matrix.mode }}/luxcore build/${{ matrix.mode }}/luxbench CXX=${{ matrix.compiler }} MODE=${{ matrix.mode }} EXTRA_CXXFLAGS=-Werror
+      - name: Build library and run example
+        run: make lib example CXX=${{ matrix.compiler }} MODE=${{ matrix.mode }} EXTRA_CXXFLAGS=-Werror
+      - name: Record library size and build time
+        if: matrix.compiler == 'g++' && matrix.mode == 'release'
+        run: bash tools/stats.sh CXX=g++
