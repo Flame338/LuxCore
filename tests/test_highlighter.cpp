@@ -83,6 +83,7 @@ std::unique_ptr<Query> term(const std::string& text, std::optional<std::string> 
 class UnknownQuery : public Query {
 public:
     ScoredDocs execute(const QueryContext&) const override { return {}; }
+    void add_leaves(QueryLeaves&) const override {}
 };
 
 }
