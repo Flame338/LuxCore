@@ -40,6 +40,16 @@ void add_search_engine_corpus(Indexer& indexer) {
 
 }
 
+TEST(a_plan_decides_fuzziness_for_the_searcher_that_scores_it) {
+    Indexer indexer("stopwords.txt");
+    add_search_engine_corpus(indexer);
+    const Searcher exact = exact_searcher(indexer);
+    const Searcher fuzzy = fuzzy_searcher(indexer);
+
+    CHECK(exact.search(fuzzy.plan("serch ")).size() == 1);
+    CHECK(fuzzy.search(exact.plan("serch ")).empty());
+}
+
 TEST(fuzzy_search_finds_a_document_despite_a_typo_in_each_word) {
     Indexer indexer("stopwords.txt");
     add_search_engine_corpus(indexer);

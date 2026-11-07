@@ -113,6 +113,10 @@ ScoredDocs TermQuery::execute(const QueryContext& context) const {
     return sorted_by_doc(scorer.score(term));
 }
 
+void TermQuery::add_leaves(QueryLeaves& leaves) const {
+    leaves.terms.push_back({term, field});
+}
+
 BooleanQuery& BooleanQuery::add(Occur occur, std::unique_ptr<Query> query) {
     clauses.push_back({occur, std::move(query)});
     return *this;
@@ -152,6 +156,14 @@ ScoredDocs BooleanQuery::execute(const QueryContext& context) const {
     return result;
 }
 
+void BooleanQuery::add_leaves(QueryLeaves& leaves) const {
+    for (const BooleanClause& clause : clauses) {
+        if (clause.occur != Occur::MustNot) {
+            clause.query->add_leaves(leaves);
+        }
+    }
+}
+
 PhraseQuery::PhraseQuery(std::vector<PhraseTerm> terms, std::optional<std::string> field)
     : terms(std::move(terms)), field(std::move(field)) {
     std::ranges::stable_sort(this->terms, {}, &PhraseTerm::position);
@@ -168,6 +180,10 @@ PhraseQuery::PhraseQuery(const std::vector<std::string>& terms, std::optional<st
     for (std::size_t i = 0; i < terms.size(); i++) {
         this->terms.push_back({terms[i], i});
     }
+}
+
+void PhraseQuery::add_leaves(QueryLeaves& leaves) const {
+    leaves.phrases.push_back({terms, field});
 }
 
 ScoredDocs PhraseQuery::execute(const QueryContext& context) const {

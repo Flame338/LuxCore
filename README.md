@@ -156,31 +156,38 @@ The field index keeps the positions of every term occurrence next to its posting
 
 ## Highlighting
 
-`Highlighter(analyzer, options).snippet(stored_text, query_string)` returns the part of a stored text that best shows why it matched, with the matching words wrapped in markers. `snippet(document, field, query_string)` does the same for a stored field and returns an empty string when the document has no such field.
+A snippet shows exactly the words that made a document a hit. `Searcher` and `Highlighter` do not decide that separately. A query is turned into a match plan once, `Searcher` scores that plan, and `Highlighter` marks it.
+
+`searcher.plan(query_string)` returns a `TextPlan`, and `searcher.search(plan)` scores it. `searcher.search(query_string)` is the same as `searcher.search(searcher.plan(query_string))`. `searcher.plan(query_string, field)` plans a search limited to one field, like `search_in`. `Highlighter(options).snippet(stored_text, plan)` returns the part of a stored text that best shows why it matched, with the matching words wrapped in markers. `snippet(document, field, plan)` does the same for a stored field and returns an empty string when the document has no such field. `field` only picks the stored value. The field scope of a text plan comes from `Searcher::plan`.
 
 - `HighlightOptions::length` is the snippet length in Unicode code points and defaults to 160. Markers and ellipsis are not counted, and a cut never falls inside a UTF-8 sequence.
 - `start_marker` and `end_marker` default to `<em>` and `</em>`. `ellipsis` defaults to `...` and is added at each edge where the text was cut. An empty string turns it off.
-- The query goes through `Analyzer::analyze_query_tokens` and the stored text through `Analyzer::analyze_tokens`. A text token is marked when its term equals a query term, or starts with the unfinished last word of the query, as `Searcher::search` expands it. Marks cover the original bytes through the token start and end offsets, so `cafe` marks `Café`.
+- A plan carries the `Analyzer` that made it. The stored text goes through `Analyzer::analyze_tokens` of that analyzer, so query terms and text tokens are always analyzed the same way. A plan keeps a pointer to the analyzer, so the analyzer must outlive the plan. Marks cover the original bytes through the token start and end offsets, so `cafe` marks `Café`.
 - Tokens that overlap or touch are merged into one mark, so the CJK query `东京` marks both characters in one span and an identifier kept whole next to its parts is marked once.
 - A text that fits in `length` comes back whole. Otherwise the window starts a quarter of `length` before a match, and the window covering the most distinct query terms wins, then the most matches, then the earliest. With no match the snippet is the beginning of the text, unmarked.
 - A match cut by the window edge is marked up to the edge. An empty query or an empty text gives the text or an empty string, unmarked.
 
-`snippet(stored_text, query, field)` and `snippet(document, field, query)` take a parsed `Query` tree instead of a query string, so structure from `QueryParser` is respected. `field` in the first overload is optional.
+### What a text plan matches
+
+A text token is marked when its term is in the plan. The plan holds exactly the terms the search scores:
+
+- Each full query word, as it stands.
+- The unfinished last word as a term, plus the completions the search kept. A one code point prefix keeps none, so `s` marks only the word `s`. A two code point prefix keeps the 4 most common completions, and a longer one keeps the 32 most common. Common means held by the most documents in the planned field scope, then by term. The prefix term and its completions count as one term when the window is chosen, unless the prefix is also a full query word, which then owns them.
+- With `Fuzziness::On` on the `Searcher`, the fuzzy candidates of each full query word. A word of up to 2 code points has none, 3 to 5 allow one edit, and 6 or more allow two. Of the terms in the index within that limit, the search keeps the 20 nearest per query word, ordered by distance and then by how many documents hold them, and only those are marked. A candidate counts as the query word it is nearest to, the earlier word on a tie, and an exact or prefix match always wins over a fuzzy one. The unfinished last word is never fuzzed.
+
+`Fuzziness` is a setting of the `Searcher` and has one meaning for both: the plan holds fuzzy candidates only when the `Searcher` that made it fuzzes, and whoever scores that plan scores them.
+
+A plan is made from one index, so a word that is not in the index can only be marked when it is a query word itself. A typo in the stored text is marked when it is in the index, which holds when the text is a document of the index.
+
+### Query trees
+
+`make_match_plan(analyzer, query, field)` returns a `MatchPlan` for a parsed `Query` tree, so structure from `QueryParser` is respected. `field` is optional. A `TextPlan` is a `MatchPlan`, so `Highlighter` takes either.
 
 - A `TermQuery` marks text tokens whose term equals its term. The term is an index term and is compared as it is, without analysis, so `TermQuery("Fox")` marks nothing.
 - A `BooleanQuery` contributes its `Must` and `Should` clauses. A `MustNot` clause is skipped together with its whole subtree, so `fox -(bear OR wolf)` marks only `fox`. A nested group such as `(a OR b) AND c` marks all three.
 - A `PhraseQuery` follows the same position rules as search: relative positions, a gap where a stop word was removed, and no slop. Only complete occurrences are marked, so `"quick brown"` leaves a lone `quick` unmarked. Each marked word keeps its own span, and the words of one occurrence count as one term when the window is chosen.
-- When `field` is given, a `TermQuery` or `PhraseQuery` on another field contributes nothing. A query without a field matches in any field, and when `field` is not given every term counts whatever its query field. The document overload passes the name of the field it reads.
-- The unfinished-word prefix of the string overload has no counterpart here, so `searc` parsed into a query marks only the word `searc`.
-- A `Query` subclass other than these three contributes nothing.
-
-`HighlightOptions::fuzziness` (`Fuzziness::Off` by default, the enum `Searcher` uses) marks words that only a fuzzy search would have matched, so the query `serch ` marks `search`.
-
-- It applies to the query-string overloads only. A `Query` tree is never fuzzed, because a `Query` does not fuzz when it runs.
-- Each full query word is checked as `Searcher` does it. A word of up to 2 code points is never fuzzed, 3 to 5 allow one edit, and 6 or more allow two. A text word is marked when its edit distance to a query word is within that limit.
-- The unfinished last word is never fuzzed, as in `Searcher`. It is only matched as a prefix.
-- A text word is matched in this order: an exact query word, the unfinished prefix, then a fuzzy match. When several query words qualify, the nearest wins. A query word and the words fuzzy-matched to it count as one term when the window is chosen.
-- The highlighter has no index. `Searcher` keeps only the 20 nearest candidate terms per query word, ordered by distance and then by how many documents hold them, so on a large index the highlighter can mark a distant typo that the search did not use.
-- Every text word that is not an exact or prefix hit costs one bounded edit distance per fuzzed query word, skipped when the lengths differ by more than the limit. A text of 300,000 five-letter words and a two-word query took about 95 ms with fuzziness on and 22 ms with it off in a release build.
+- When `field` is given, a `TermQuery` or `PhraseQuery` on another field contributes nothing. A query without a field matches in any field, and when `field` is not given every term counts whatever its query field.
+- A query tree has no unfinished word and no fuzziness, so `searc` parsed into a query marks only the word `searc`.
+- A `Query` subclass adds its leaves in `add_leaves`. One that adds none contributes nothing.
 
 Choosing the window is one two-pointer pass over the matches, so a large text with many matches stays cheap. A text of 1.2 MB with 300,000 matches took about 35 ms in a release build. Known limits: the snippet is the text as stored, so it can start or end inside a word. Only one window is returned, never several fragments. A `length` of 0 returns only the ellipsis.

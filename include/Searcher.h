@@ -4,6 +4,7 @@
 #include "Analyzer.h"
 #include "DocumentKeys.h"
 #include "EditDistance.h"
+#include "MatchPlan.h"
 #include "Scoring.h"
 #include <iostream>
 #include <map>
@@ -27,8 +28,6 @@ class Searcher {
         Scoring scoring;
         Fuzziness fuzziness;
 
-        std::vector<SearchHit> search_scoped(const std::string& query_string, std::optional<std::string_view> field,
-                                             int top_k) const;
         std::vector<Suggestion> suggest_scoped(const std::string& query_string, std::optional<std::string_view> field,
                                                std::size_t limit) const;
 
@@ -37,6 +36,8 @@ class Searcher {
                           FieldBoosts boosts = FieldBoosts::standard(), const DocumentKeys* keys = nullptr,
                           Scoring scoring = Scoring::tf_idf(), Fuzziness fuzziness = Fuzziness::Off);
 
+        TextPlan plan(const std::string& query_string, std::optional<std::string_view> field = std::nullopt) const;
+        std::vector<SearchHit> search(const TextPlan& plan, int top_k = 10) const;
         std::vector<SearchHit> search(const std::string& query_string, int top_k = 10) const;
         std::vector<SearchHit> search_in(std::string_view field, const std::string& query_string, int top_k = 10) const;
         std::vector<Suggestion> suggest(const std::string& query_string, std::size_t limit = 5) const;

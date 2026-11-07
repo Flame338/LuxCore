@@ -27,11 +27,32 @@ struct QueryContext {
     }
 };
 
+struct PhraseTerm {
+    std::string term;
+    std::size_t position;
+};
+
+struct LeafTerm {
+    std::string term;
+    std::optional<std::string> field;
+};
+
+struct LeafPhrase {
+    std::vector<PhraseTerm> terms;
+    std::optional<std::string> field;
+};
+
+struct QueryLeaves {
+    std::vector<LeafTerm> terms;
+    std::vector<LeafPhrase> phrases;
+};
+
 class Query {
 public:
     virtual ~Query() = default;
 
     virtual ScoredDocs execute(const QueryContext& context) const = 0;
+    virtual void add_leaves(QueryLeaves& leaves) const = 0;
 };
 
 class TermQuery : public Query {
@@ -47,6 +68,7 @@ public:
     const std::optional<std::string>& get_field() const { return field; }
 
     ScoredDocs execute(const QueryContext& context) const override;
+    void add_leaves(QueryLeaves& leaves) const override;
 };
 
 enum class Occur { Must, Should, MustNot };
@@ -66,11 +88,7 @@ public:
     const std::vector<BooleanClause>& get_clauses() const { return clauses; }
 
     ScoredDocs execute(const QueryContext& context) const override;
-};
-
-struct PhraseTerm {
-    std::string term;
-    std::size_t position;
+    void add_leaves(QueryLeaves& leaves) const override;
 };
 
 class PhraseQuery : public Query {
@@ -86,4 +104,5 @@ public:
     const std::optional<std::string>& get_field() const { return field; }
 
     ScoredDocs execute(const QueryContext& context) const override;
+    void add_leaves(QueryLeaves& leaves) const override;
 };
