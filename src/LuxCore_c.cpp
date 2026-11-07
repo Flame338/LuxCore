@@ -40,10 +40,6 @@ lux_status guarded(Body body) {
     }
 }
 
-std::string text_of(const char* data, std::size_t length) {
-    return std::string(data, length);
-}
-
 }
 
 const char* lux_status_message(lux_status status) {
@@ -83,7 +79,7 @@ lux_status lux_index_add(lux_index* index, const char* key, std::size_t key_leng
         return LUX_INVALID_ARGUMENT;
     }
     return guarded([&] {
-        index->index.add(text_of(key, key_length), text_of(title, title_length), text_of(body, body_length));
+        index->index.add(std::string(key, key_length), std::string(title, title_length), std::string(body, body_length));
         return LUX_OK;
     });
 }
@@ -93,7 +89,7 @@ lux_status lux_index_remove(lux_index* index, const char* key, std::size_t key_l
         return LUX_INVALID_ARGUMENT;
     }
     return guarded([&] {
-        *removed = index->index.remove(text_of(key, key_length)) ? 1 : 0;
+        *removed = index->index.remove(std::string(key, key_length)) ? 1 : 0;
         return LUX_OK;
     });
 }
@@ -102,10 +98,8 @@ lux_status lux_index_size(const lux_index* index, std::size_t* size) {
     if (index == nullptr || size == nullptr) {
         return LUX_INVALID_ARGUMENT;
     }
-    return guarded([&] {
-        *size = index->index.size();
-        return LUX_OK;
-    });
+    *size = index->index.size();
+    return LUX_OK;
 }
 
 lux_status lux_index_stored(const lux_index* index, const char* key, std::size_t key_length, const char* field,
@@ -117,7 +111,7 @@ lux_status lux_index_stored(const lux_index* index, const char* key, std::size_t
         return LUX_INVALID_ARGUMENT;
     }
     return guarded([&] {
-        std::optional<std::string> value = index->index.stored(text_of(key, key_length), text_of(field, field_length));
+        std::optional<std::string> value = index->index.stored(std::string(key, key_length), std::string(field, field_length));
         if (!value) {
             return LUX_NOT_FOUND;
         }
@@ -135,7 +129,7 @@ lux_status lux_index_search(const lux_index* index, const char* query, std::size
         return LUX_INVALID_ARGUMENT;
     }
     return guarded([&] {
-        *out = new lux_hits{index->index.search(text_of(query, query_length), limit)};
+        *out = new lux_hits{index->index.search(std::string(query, query_length), limit)};
         return LUX_OK;
     });
 }
@@ -149,7 +143,7 @@ lux_status lux_index_suggest(const lux_index* index, const char* query, std::siz
         return LUX_INVALID_ARGUMENT;
     }
     return guarded([&] {
-        *out = new lux_strings{index->index.suggest(text_of(query, query_length), limit)};
+        *out = new lux_strings{index->index.suggest(std::string(query, query_length), limit)};
         return LUX_OK;
     });
 }
