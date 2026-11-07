@@ -24,7 +24,7 @@ index.add("note-1", "Shopping list", "milk, eggs, bread and butter");
 for (const luxcore::Hit& hit : index.search("shoping lis")) std::cout << hit.key << "\n";
 ```
 
-`make lib` builds `build/<mode>/libluxcore.a`. Compile your code with `-I<luxcore>/api`, include `LuxCore.h`, and link the library. `api/` holds the only public header. `include/` holds internals that the library uses and embedders do not need.
+`make lib` builds `build/<mode>/libluxcore.a`. Compile your code with `-I<luxcore>/api`, include `LuxCore.h`, and link the library. `api/` holds the public headers, `LuxCore.h` for C++ and `luxcore_c.h` for C. `include/` holds internals that the library uses and embedders do not need.
 
 `make example` builds `examples/search.cpp` against `libluxcore.a` with only `api/` on the include path, then runs it. Pass a query with `make example ARGS="brea"`.
 
@@ -39,6 +39,24 @@ for (const luxcore::Hit& hit : index.search("shoping lis")) std::cout << hit.key
 - `stored(key, field)` returns the stored `title` or `body` text, or nothing when the key or field is unknown.
 
 The public `Index` uses no stop words, so it never reads a file from the working directory. For stop words, highlighting, field-scoped search or query trees, use the classes in `include/` directly.
+
+### C API
+
+`api/luxcore_c.h` wraps `luxcore::Index` in flat C functions so that C, Python, C# and Rust can call it. It is plain C11 with `extern "C"` guards and needs no C++ headers. Link `libluxcore.a` with a C++ linker driver, or load the shared library.
+
+- Every function that can fail returns a `lux_status`: `LUX_OK`, `LUX_INVALID_ARGUMENT`, `LUX_NOT_FOUND`, `LUX_OUT_OF_MEMORY` or `LUX_INTERNAL_ERROR`. No exception crosses the boundary. A null pointer, including a null string with length 0, gives `LUX_INVALID_ARGUMENT`, and so does an empty key.
+- `lux_status_message(status)` returns static text for a status. The caller does not free it, and it is safe to call from any thread.
+- Strings go in as UTF-8 `const char*` plus a `size_t` byte length. They need no NUL terminator and the library copies them before it returns.
+- `lux_index_create(&index)` makes an index and `lux_index_free(index)` destroys it. The caller owns the index and frees it once.
+- `lux_index_add`, `lux_index_remove` and `lux_index_size` mirror `add`, `remove` and `size`. `remove` reports whether the key was present through an `int*`.
+- `lux_index_search`, `lux_index_suggest` and `lux_index_stored` return a result handle through an out pointer: `lux_hits`, `lux_strings` and `lux_text`. The caller owns each handle and frees it with `lux_hits_free`, `lux_strings_free` or `lux_text_free`. On any non-OK status the out pointer is set to null and nothing needs freeing. `lux_index_stored` returns `LUX_NOT_FOUND` when the key or field is unknown.
+- Accessors return a pointer and a length into the handle: `lux_hits_key`, `lux_strings_get` and `lux_text_data` with `lux_text_length`. The pointer stays valid until the handle is freed. Copy the bytes to keep them longer. An out of range position returns null.
+- The free functions accept null. Results do not depend on the index, so a result may outlive the index that made it.
+- An index is not thread safe, as with the C++ class. Use one thread per index, or lock around calls.
+
+`make shared` builds `build/<mode>/libluxcore.so`, or `libluxcore.dll` on Windows, with only the `lux_*` functions exported. The Windows DLL links the C++ runtime statically, so it depends only on system DLLs. Code that includes the header for the static library needs no macro. Code that links the Windows DLL defines `LUX_SHARED` so that the functions are imported.
+
+`examples/python/luxcore.py` is a `ctypes` binding with an `Index` class and a demo. Run `make shared`, then `python examples/python/luxcore.py --lib build/debug/libluxcore.dll`, or set `LUXCORE_LIB` to the library path. It takes an optional query argument. `tests/c/test_c_api.c` is a C test that `make test` builds and runs.
 
 ### Size and build time
 
