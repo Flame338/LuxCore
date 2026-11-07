@@ -30,6 +30,9 @@ public:
     std::vector<Hit> search(const std::string& query, std::size_t limit = 10) const;
     std::vector<std::string> suggest(const std::string& query, std::size_t limit = 5) const;
 
+    void save(const std::string& path) const;
+    static Index load(const std::string& path);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;

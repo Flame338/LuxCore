@@ -8,6 +8,9 @@
 #include <utility>
 #include <vector>
 
+class ByteWriter;
+class ByteReader;
+
 class DocumentStore {
 private:
     std::vector<std::optional<Document>> documents;
@@ -48,4 +51,8 @@ public:
     }
 
     std::size_t size() const { return live; }
+    std::size_t id_limit() const { return documents.size(); }
+
+    void write(ByteWriter& writer) const;
+    static DocumentStore read(ByteReader& reader);
 };
