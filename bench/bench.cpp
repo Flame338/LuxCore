@@ -221,6 +221,72 @@ Audit audit_pass(const Searcher& searcher, const std::vector<Keystroke>& keystro
     return audit;
 }
 
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::string bytes(static_cast<std::size_t>(std::filesystem::file_size(path)), '\0');
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return bytes;
+}
+
+struct PersistenceResult {
+    double save_ms = 0.0;
+    double load_ms = 0.0;
+    std::size_t file_bytes = 0;
+    std::size_t compared = 0;
+    std::size_t mismatches = 0;
+};
+
+PersistenceResult measure_persistence(const Indexer& indexer, const std::string& stop_words_path,
+                                      const std::vector<Keystroke>& keystrokes, const Options& options) {
+    PersistenceResult result;
+    const std::filesystem::path file = std::filesystem::temp_directory_path() / "luxbench_index.lux";
+
+    const Clock::time_point save_start = Clock::now();
+    {
+        const std::string bytes = indexer.serialize();
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    result.save_ms = microseconds(save_start, Clock::now()) / 1000.0;
+    result.file_bytes = static_cast<std::size_t>(std::filesystem::file_size(file));
+
+    const Clock::time_point load_start = Clock::now();
+    const std::string bytes = read_file(file);
+    const Indexer loaded = Indexer::deserialize(bytes, stop_words_path);
+    result.load_ms = microseconds(load_start, Clock::now()) / 1000.0;
+    std::filesystem::remove(file);
+
+    const Fuzziness fuzziness = options.fuzzy ? Fuzziness::On : Fuzziness::Off;
+    const Searcher before(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
+                          &indexer.get_keys(), Scoring::bm25_with(), fuzziness);
+    const Searcher after(loaded.get_index(), loaded.get_analyzer(), FieldBoosts::standard(),
+                         &loaded.get_keys(), Scoring::bm25_with(), fuzziness);
+    for (std::size_t i = 0; i < keystrokes.size(); i += 5) {
+        const std::string& text = keystrokes[i].text;
+        const std::vector<SearchHit> expected_hits = before.search(text, result_limit);
+        const std::vector<SearchHit> actual_hits = after.search(text, result_limit);
+        const std::vector<Suggestion> expected_suggestions = before.suggest(text, suggestion_limit);
+        const std::vector<Suggestion> actual_suggestions = after.suggest(text, suggestion_limit);
+        result.compared++;
+
+        bool same = expected_hits.size() == actual_hits.size() &&
+                    expected_suggestions.size() == actual_suggestions.size();
+        for (std::size_t h = 0; same && h < expected_hits.size(); h++) {
+            same = expected_hits[h].doc_id == actual_hits[h].doc_id && expected_hits[h].key == actual_hits[h].key &&
+                   expected_hits[h].score == actual_hits[h].score;
+        }
+        for (std::size_t s = 0; same && s < expected_suggestions.size(); s++) {
+            same = expected_suggestions[s].term == actual_suggestions[s].term &&
+                   expected_suggestions[s].doc_freq == actual_suggestions[s].doc_freq;
+        }
+        if (!same) {
+            result.mismatches++;
+            std::cerr << "PERSISTENCE MISMATCH: query \"" << text << "\" returns different results after load\n";
+        }
+    }
+    return result;
+}
+
 std::vector<double> timed_removals(Indexer& indexer, int docs, int removes) {
     std::vector<double> samples;
     const int count = std::min(removes, docs);
@@ -304,6 +370,8 @@ int main(int argc, char** argv) {
     std::vector<double> sorted_p99 = pass_p99;
     std::sort(sorted_p99.begin(), sorted_p99.end());
 
+    const PersistenceResult persistence = measure_persistence(indexer, options.stop > 0 ? stop_file.string() : "",
+                                                              keystrokes, options);
     std::cout << std::fixed << std::setprecision(1);
     std::filesystem::remove(stop_file);
 
@@ -317,6 +385,10 @@ int main(int argc, char** argv) {
               << 100.0 * static_cast<double>(memory.position_bytes) /
                      static_cast<double>(memory.posting_bytes + memory.position_bytes)
               << "\n";
+    std::cout << "persistence save_ms=" << persistence.save_ms << " load_ms=" << persistence.load_ms
+              << " build_ms=" << build_ms << " load_speedup=" << build_ms / persistence.load_ms
+              << " file_mb=" << static_cast<double>(persistence.file_bytes) / 1048576.0
+              << " verified_queries=" << persistence.compared << " mismatches=" << persistence.mismatches << "\n";
     std::cout << "fuzzy=" << options.fuzzy << "\n";
     std::cout << "workload queries=" << options.queries << " keystrokes=" << keystrokes.size()
               << " passes=" << options.passes << " seed=" << options.seed << "\n";
@@ -355,5 +427,5 @@ int main(int argc, char** argv) {
                   << "  p50_us=" << std::setw(9) << percentile(in_bucket, 0.50)
                   << "  p99_us=" << std::setw(9) << percentile(in_bucket, 0.99) << "\n";
     }
-    return audit.errors == 0 ? 0 : 1;
+    return audit.errors == 0 && persistence.mismatches == 0 ? 0 : 1;
 }

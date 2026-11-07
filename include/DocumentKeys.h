@@ -5,6 +5,10 @@
 #include <unordered_map>
 #include <vector>
 
+class ByteWriter;
+class ByteReader;
+class DocumentStore;
+
 class DocumentKeys {
 private:
     std::unordered_map<std::string, int> ids;
@@ -42,4 +46,7 @@ public:
         ids.erase(keys[static_cast<std::size_t>(id)]);
         keys[static_cast<std::size_t>(id)].clear();
     }
+
+    void write(ByteWriter& writer) const;
+    static DocumentKeys read(ByteReader& reader, const DocumentStore& store);
 };

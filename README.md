@@ -12,7 +12,7 @@ Lucene is built for servers, clusters and huge corpora. LuxCore is the small ver
 
 - Not a server. There is no network layer, no sharding and no replication.
 - Not built for large corpora. The index lives in memory.
-- Not persistent yet. An index is rebuilt each run until saving and loading lands.
+- Not an on-disk store. The index lives in memory. It can be saved to one file and loaded back whole, but it is not updated on disk. See Persistence.
 - Not thread safe yet. Do not search while another thread adds or removes documents.
 - Not a drop-in for Lucene. The names and file formats differ.
 
@@ -37,6 +37,7 @@ for (const luxcore::Hit& hit : index.search("shoping lis")) std::cout << hit.key
 - `search(query, limit = 10)` returns `Hit`s with `key` and `score`, best first. Searches use BM25 with a boost on `title`, match the unfinished last word as a prefix, and tolerate typos in the finished words.
 - `suggest(query, limit = 5)` returns completions of the unfinished last word, most common first.
 - `stored(key, field)` returns the stored `title` or `body` text, or nothing when the key or field is unknown.
+- `save(path)` writes the index to one file. `Index::load(path)` reads such a file and returns an index that behaves like the one that was saved. Both throw `std::runtime_error` on I/O errors and `load` also throws on a file that is not a valid index. See Persistence.
 
 The public `Index` uses no stop words, so it never reads a file from the working directory. For stop words, highlighting, field-scoped search or query trees, use the classes in `include/` directly.
 
@@ -61,6 +62,57 @@ The public `Index` uses no stop words, so it never reads a file from the working
 ### Size and build time
 
 `make stats` rebuilds the release library and the example from scratch and prints the build time and file sizes. CI runs it on g++ release and adds the numbers to the job summary. On the developer machine (g++ 16.1 on Windows, one job) it measured 16.6 s, 528 KB for `libluxcore.a` and 2.9 MB for the statically linked example executable.
+
+## Persistence
+
+`Index::save(path)` writes the whole index to one binary file. `Index::load(path)` reads it back in a fraction of the time that building it takes.
+
+```cpp
+index.save("notes.lux");
+luxcore::Index again = luxcore::Index::load("notes.lux");
+```
+
+A loaded index returns the same hits with the same scores, the same suggestions and the same stored text as the index that was saved. It stays fully usable, so `add`, replace and `remove` work after a load, and new documents get internal ids that continue after the highest id ever used. Saving does not change the index. Saving and loading an empty index works.
+
+`save` and `load` throw `std::runtime_error`. `save` throws when the file cannot be written. `load` throws when the path is not a readable file, when the magic number is wrong, when the format version is not supported, when the file is truncated or has extra bytes, and when the content is inconsistent. The message says which. A bad file never crashes the program and never makes `load` allocate more than the file can justify. `save` writes straight to the target path, so a crash in the middle of a save can leave a truncated file, which `load` then rejects. Write to a temporary name and rename it when that matters.
+
+The C API does not expose `save` and `load` yet.
+
+### What is saved
+
+The file holds the primary state only. That is the stored fields of every live document, including the gaps left by removed documents so that internal ids are never reused, the key of every keyed document, and for each field the sorted term dictionary with one posting list per term. A posting holds a document id, a term frequency and the positions of the term.
+
+Everything else is rebuilt while loading. This covers the combined term map that `Searcher` uses, the fuzzy matching trie, the length of every field in every document, the document counts and averages that BM25 needs, and the per-document term lists that removal uses. A field length is the sum of the term frequencies in its postings, so the file does not repeat it and the two cannot disagree.
+
+### Format
+
+All numbers are unsigned. The 16 byte header is written little endian on every platform: the 4 bytes `LUXC` as magic number, a 32 bit format version, and a 64 bit count of the bytes that follow. The content has three sections in this order: the document store, the keys, and the field postings.
+
+Every number in the content is a variable-length integer in LEB128 style, which takes 7 bits per byte. A string is a length followed by its UTF-8 bytes. Document ids in a posting list are stored as the gap from the previous id, and positions as the gap from the previous position, so a term that occurs in consecutive documents costs about one byte per id. Document ids in the store and in the key table are gaps too.
+
+`load` checks every count and length against the bytes that remain before it allocates anything. It also checks that ids ascend, that every posting and every key points to a live document, that terms are sorted, and that field options are known. The one thing a file can claim without spending bytes is a removed id. A file may declare at most 65,536 removed ids plus 16 for each byte of its own size, and `load` rejects more.
+
+The file has no checksum. Flipped bits inside text or numbers that leave the structure valid load as a different but safe index.
+
+### Version policy
+
+The current format version is 1. A build reads only the version it writes and throws on any other, so a file from a newer build is refused with a message that names both versions. There are no migrations yet. Any change to the layout bumps the version, and the file is only valid for the library version that wrote it.
+
+The analyzer is not saved. The public `Index` always uses the same analyzer, and a file is only valid for the analyzer that built it. A later library version that changes tokenizing or folding can produce different terms from the same text, and queries then miss the terms in an old file. Rebuild the index from the source documents after such an upgrade. When you use `Indexer` directly, `Indexer::serialize()` returns the file as a string and `Indexer::deserialize(bytes, stop_words_path)` parses it. You must pass the same stop word file that the index was built with.
+
+### Measured numbers
+
+`make MODE=release bench` builds a corpus of 100,000 documents with a vocabulary of 40,000 words, saves it to a temporary file, loads it back, and compares the results of a sample of the benchmark queries (hits, scores and suggestions, with BM25) between the original and the loaded index. It prints an error and exits non-zero on any difference. The save time is `serialize` plus writing the file. The load time is reading the file plus parsing it and rebuilding the derived state.
+
+Measured on an Intel Core i7-13700K, Windows 11, g++ 16.1.0 with `-O2 -DNDEBUG`, in seven runs:
+
+| Step | Time | Note |
+| --- | --- | --- |
+| Build the index from documents | 2.63 to 2.96 s | analysis and indexing of 100,000 documents |
+| Save | 66 to 102 ms | 37.3 MB file |
+| Load | 211 to 244 ms | 11.5 to 13.8 times faster than building |
+
+In one profiled run the 220 ms of a load split into about 25 ms for the stored documents, 11 ms for the keys, and 166 ms for the postings. Of the postings time, about 54 ms is parsing, 39 ms builds the per-document term entries, 33 ms fills their term lists, 15 ms builds the fuzzy trie, and the rest merges the per-field lists into the combined map. The reading of the file is the remaining 20 ms.
 
 ## Document keys
 

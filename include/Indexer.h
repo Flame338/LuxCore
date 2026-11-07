@@ -8,6 +8,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 class Indexer {
 private:
@@ -33,4 +34,7 @@ public:
     const DocumentKeys& get_keys() const { return doc_keys; }
     const Document& get_document(int id) const { return doc_store.get(id); }
     const Analyzer& get_analyzer() const { return analyzer; }
+
+    std::string serialize() const;
+    static Indexer deserialize(std::string_view data, const std::string& stop_words_path = "");
 };

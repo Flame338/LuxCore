@@ -12,6 +12,10 @@
 #include <unordered_map>
 #include <vector>
 
+class ByteWriter;
+class ByteReader;
+class DocumentStore;
+
 struct Posting {
     int doc_id;
     int term_frequency;
@@ -101,4 +105,7 @@ class InvertedIndex {
         double get_average_field_length(std::string_view field) const;
         std::size_t get_unique_terms_count() const { return index.size(); }
         IndexMemory memory_usage() const;
+
+        void write(ByteWriter& writer) const;
+        static InvertedIndex read(ByteReader& reader, const DocumentStore& store);
 };

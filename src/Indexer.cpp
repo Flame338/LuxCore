@@ -1,5 +1,7 @@
 #include "Indexer.h"
 
+#include "ByteIO.h"
+
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -7,6 +9,10 @@
 #include <utility>
 
 namespace {
+
+constexpr std::uint32_t format_magic = 0x4358554C;
+constexpr std::uint32_t format_version = 1;
+constexpr std::size_t header_size = 16;
 
 struct Prepared {
     FieldTermPositions field_term_positions;
@@ -86,4 +92,51 @@ bool Indexer::remove_document(int id) {
 bool Indexer::remove_document(const std::string& key) {
     const std::optional<int> id = doc_keys.find(key);
     return id && remove_document(*id);
+}
+
+std::string Indexer::serialize() const {
+    ByteWriter body;
+    doc_store.write(body);
+    doc_keys.write(body);
+    inverted_index.write(body);
+
+    ByteWriter file;
+    file.reserve(header_size + body.size());
+    file.u32(format_magic);
+    file.u32(format_version);
+    file.u64(body.size());
+    file.append(body.bytes());
+    return file.take();
+}
+
+Indexer Indexer::deserialize(std::string_view data, const std::string& stop_words_path) {
+    ByteReader reader(data);
+    if (data.size() < 8) {
+        fail_format("file is too short to be a LuxCore index");
+    }
+    if (reader.u32() != format_magic) {
+        fail_format("bad magic number, this is not a LuxCore index");
+    }
+    const std::uint32_t version = reader.u32();
+    if (version != format_version) {
+        fail_format("unsupported format version " + std::to_string(version) + ", this build reads version " +
+                    std::to_string(format_version));
+    }
+    if (data.size() < header_size) {
+        fail_format("file is truncated inside the header");
+    }
+    const std::uint64_t body_size = reader.u64();
+    if (body_size != reader.remaining()) {
+        fail_format("file is truncated or has trailing bytes, the header declares " + std::to_string(body_size) +
+                    " bytes of content and the file holds " + std::to_string(reader.remaining()));
+    }
+
+    Indexer indexer(stop_words_path);
+    indexer.doc_store = DocumentStore::read(reader);
+    indexer.doc_keys = DocumentKeys::read(reader, indexer.doc_store);
+    indexer.inverted_index = InvertedIndex::read(reader, indexer.doc_store);
+    if (!reader.at_end()) {
+        fail_format("unexpected bytes after the index");
+    }
+    return indexer;
 }
