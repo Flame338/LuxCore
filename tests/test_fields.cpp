@@ -44,7 +44,7 @@ struct Engine {
     }
 
     Searcher searcher(FieldBoosts boosts = FieldBoosts::standard()) const {
-        return Searcher(indexer.get_index(), indexer.get_analyzer(), std::move(boosts));
+        return Searcher(indexer.get_index(), indexer.get_analyzer(), {.boosts = std::move(boosts)});
     }
 };
 
@@ -182,7 +182,7 @@ TEST(documents_with_a_single_field_rank_the_same_whatever_the_boosts) {
     }
 
     const Searcher standard(indexer.get_index(), indexer.get_analyzer());
-    const Searcher flat(indexer.get_index(), indexer.get_analyzer(), FieldBoosts());
+    const Searcher flat(indexer.get_index(), indexer.get_analyzer(), {.boosts = FieldBoosts()});
     const std::vector<SearchHit> expected = flat.search("rocket launch");
     const std::vector<SearchHit> actual = standard.search("rocket launch");
 

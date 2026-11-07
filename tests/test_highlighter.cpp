@@ -66,7 +66,7 @@ std::string snippet_with(const Analyzer& analyzer, const std::string& text, cons
                          HighlightOptions options = {}, Fuzziness fuzziness = Fuzziness::Off) {
     InvertedIndex index;
     index.add_document(0, FieldTermFreqs{{"body", term_freqs_of(analyzer, text)}});
-    const Searcher searcher(index, analyzer, FieldBoosts::standard(), nullptr, Scoring::tf_idf(), fuzziness);
+    const Searcher searcher(index, analyzer, {.fuzziness = fuzziness});
     return Highlighter(std::move(options)).snippet(text, searcher.plan(query));
 }
 
@@ -521,8 +521,7 @@ TEST(highlight_fuzzy_is_off_by_default) {
     InvertedIndex index;
     index.add_document(0, FieldTermFreqs{{"body", term_freqs_of(analyzer, "A search engine")}});
     const Searcher exact(index, analyzer);
-    const Searcher fuzzy_searcher(index, analyzer, FieldBoosts::standard(), nullptr, Scoring::tf_idf(),
-                                  Fuzziness::On);
+    const Searcher fuzzy_searcher(index, analyzer, {.fuzziness = Fuzziness::On});
     CHECK(!exact.plan("serch ").unit_of("search"));
     CHECK(fuzzy_searcher.plan("serch ").unit_of("search"));
 }
@@ -613,8 +612,7 @@ TEST(highlight_fuzzy_applies_to_the_document_overload) {
     Indexer indexer("stopwords.txt");
     const Document document = make_text_document("Search tales", "A quick brown fox");
     indexer.add_document("search", document);
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(), nullptr,
-                            Scoring::tf_idf(), Fuzziness::On);
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), {.fuzziness = Fuzziness::On});
     const Highlighter highlighter;
     CHECK_EQ(highlighter.snippet(document, "title", searcher.plan("serch ")), "<em>Search</em> tales");
     CHECK_EQ(highlighter.snippet(document, "body", searcher.plan("serch ")), "A quick brown fox");
@@ -635,8 +633,7 @@ TEST(highlight_fuzzy_marks_what_a_fuzzy_search_found) {
     indexer.add_document("garden", make_text_document("Garden", "tomatoes and basil"));
     indexer.add_document("kitchen", make_text_document("Kitchen", "pots and pans"));
     const Searcher exact(indexer.get_index(), indexer.get_analyzer());
-    const Searcher fuzzy_searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                                  &indexer.get_keys(), Scoring::tf_idf(), Fuzziness::On);
+    const Searcher fuzzy_searcher(indexer, {.fuzziness = Fuzziness::On});
     const Highlighter highlighter;
 
     for (const std::string query : {"serch ", "engin ", "rankng ", "saerch engine "}) {
@@ -673,7 +670,7 @@ TEST(highlight_fuzzy_marks_only_the_candidates_the_search_kept) {
     index.add_document(1, FieldTermFreqs{{"body", term_freqs_of(analyzer, kept_words)}});
     index.add_document(2, FieldTermFreqs{{"body", term_freqs_of(analyzer, kept_words)}});
     index.add_document(3, FieldTermFreqs{{"body", term_freqs_of(analyzer, "serchz")}});
-    const Searcher searcher(index, analyzer, FieldBoosts::standard(), nullptr, Scoring::tf_idf(), Fuzziness::On);
+    const Searcher searcher(index, analyzer, {.fuzziness = Fuzziness::On});
 
     const TextPlan plan = searcher.plan("serch ");
     std::vector<int> found;

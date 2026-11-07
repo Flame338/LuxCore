@@ -122,12 +122,12 @@ Applications identify a document by a string key. The index identifies it by an 
 - Internal ids are never reused. Removing a document leaves a gap in the document store, and adding the same key again gets a fresh id.
 - `add_document(document)` without a key still works and returns the internal id. Such a document has an empty key and can be removed or updated by id only.
 - `remove_document` and `update_document` accept the internal id, and `remove_document` also accepts the key.
-- `SearchHit` carries both the internal `doc_id` and the `key`. The key is filled when the `Searcher` is given `Indexer::get_keys()`.
+- `SearchHit` carries both the internal `doc_id` and the `key`. The key is filled when the `Searcher` is built from an `Indexer`. A `Searcher` built from a bare `InvertedIndex` and `Analyzer` leaves it empty.
 
 
 ## Scoring
 
-The scorer is chosen per `Searcher` with `Scoring`. `Scoring::tf_idf()` is the default and uses weighted tf times the Lucene-classic idf. `Scoring::bm25_with(k1, b)` uses BM25 with k1 = 1.2 and b = 0.75 by default.
+The scorer is chosen per `Searcher` with `SearchOptions::scoring`. `Scoring::tf_idf()` is the default and uses weighted tf times the Lucene-classic idf. `Scoring::bm25_with(k1, b)` uses BM25 with k1 = 1.2 and b = 0.75 by default.
 
 BM25 is combined with the field boosts in the BM25F style. For each field a posting contributes `boost * tf / (1 - b + b * field_length / average_field_length)`. These values are summed over fields into one weighted tf, and the term scores `idf * tf / (k1 + tf)` with `idf = ln(1 + (N - n + 0.5) / (n + 0.5))`. Field length is the number of indexed tokens in that field after analysis, and the average is over documents that have the field. Prefix completions for the word being typed keep their own saturating formula and only take the idf from the chosen scorer.
 
@@ -135,7 +135,9 @@ Results are collected with a bounded priority queue that keeps the best `top_k` 
 
 ## Queries
 
-`IndexSearcher` runs a `Query` tree against an `InvertedIndex` and returns `SearchHit`s ranked like `Searcher` does, with the same field boosts and the same tf-idf or BM25 scoring. `matching_ids` returns the matching doc ids in ascending order.
+`Searcher` is the one way to run a search. Build it once from an `Indexer`, so hits carry keys, or from an `InvertedIndex` and an `Analyzer`, plus optional `SearchOptions`. The options are `boosts` (`FieldBoosts::standard()`), `scoring` (`Scoring::tf_idf()`) and `fuzziness` (`Fuzziness::Off`), and any of them can be set alone: `Searcher searcher(indexer, {.scoring = Scoring::bm25_with(), .fuzziness = Fuzziness::On});`.
+
+`search(text)` and `search_in(field, text)` run typed text. `search(query)` runs a parsed or hand-built `Query` tree and returns `SearchHit`s ranked the same way, with the same field boosts and the same tf-idf or BM25 scoring. `matching_ids(query)` returns the matching doc ids in ascending order.
 
 - `TermQuery(term, field)` matches an exact index term, so the term is not analyzed. Without a field it matches in any field.
 - `BooleanQuery` holds clauses of `Occur::Must`, `Occur::Should` and `Occur::MustNot`. With at least one MUST clause the result is the intersection of the MUST clauses, minus the MUST_NOT clauses, and SHOULD clauses only add score. Without a MUST clause it is the union of the SHOULD clauses, minus the MUST_NOT clauses. A query with only MUST_NOT clauses matches nothing. Scores of matching clauses add up.

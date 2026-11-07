@@ -20,7 +20,7 @@ struct BodyIndex {
     }
 
     std::vector<SearchHit> search(const std::string& query, Scoring scoring, int top_k = 10) const {
-        return Searcher(index, analyzer, FieldBoosts(), nullptr, scoring).search(query, top_k);
+        return Searcher(index, analyzer, {.boosts = FieldBoosts(), .scoring = scoring}).search(query, top_k);
     }
 };
 
@@ -142,10 +142,9 @@ TEST(bm25_keeps_field_boosts_working) {
     indexer.add_document(make_text_document("Notes", "rocket"));
     indexer.add_document(make_text_document("Rocket", "notes"));
 
-    const Searcher standard(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(), nullptr,
-                            Scoring::bm25_with());
-    const Searcher flipped(indexer.get_index(), indexer.get_analyzer(), FieldBoosts().set("body", 5.0), nullptr,
-                           Scoring::bm25_with());
+    const Searcher standard(indexer.get_index(), indexer.get_analyzer(), {.scoring = Scoring::bm25_with()});
+    const Searcher flipped(indexer.get_index(), indexer.get_analyzer(),
+                           {.boosts = FieldBoosts().set("body", 5.0), .scoring = Scoring::bm25_with()});
     CHECK_EQ(ids_of(standard.search("rocket ")), "[1][0]");
     CHECK_EQ(ids_of(flipped.search("rocket ")), "[0][1]");
 }
@@ -155,8 +154,8 @@ TEST(bm25_scoped_search_uses_the_chosen_field_statistics) {
     indexer.add_document(make_text_document("Rocket", "alpha beta gamma delta epsilon zeta"));
     indexer.add_document(make_text_document("Rocket launch pad", "alpha"));
 
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts(), nullptr,
-                            Scoring::bm25_with());
+    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(),
+                            {.boosts = FieldBoosts(), .scoring = Scoring::bm25_with()});
     CHECK_EQ(ids_of(searcher.search_in("title", "rocket ")), "[0][1]");
     const std::vector<SearchHit> hits = searcher.search_in("title", "rocket ");
     const double idf = std::log(1.0 + (2.0 - 2.0 + 0.5) / (2.0 + 0.5));

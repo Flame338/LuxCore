@@ -8,8 +8,7 @@
 namespace {
 
 std::string keys_of(const Indexer& indexer, const std::string& query) {
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                            &indexer.get_keys());
+    const Searcher searcher(indexer);
     std::string text;
     for (const SearchHit& hit : searcher.search(query)) {
         text += "[" + hit.key + "]";
@@ -167,8 +166,7 @@ TEST(search_never_returns_a_removed_document) {
     indexer.remove_document("doc1");
     indexer.remove_document("doc4");
 
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                            &indexer.get_keys());
+    const Searcher searcher(indexer);
     for (const char* query : {"rocket", "searching", "search", "launch", "rocket launch", "roc"}) {
         for (const SearchHit& hit : searcher.search(query, 100)) {
             CHECK(hit.key != "doc1" && hit.key != "doc4");
@@ -184,8 +182,7 @@ TEST(documents_without_a_key_return_an_empty_key_in_hits) {
     Indexer indexer("stopwords.txt");
     indexer.add_document(make_text_document("Cat", ""));
 
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                            &indexer.get_keys());
+    const Searcher searcher(indexer);
     const std::vector<SearchHit> hits = searcher.search("cat");
     CHECK_EQ(hits.size(), static_cast<std::size_t>(1));
     CHECK_EQ(hits[0].doc_id, 0);

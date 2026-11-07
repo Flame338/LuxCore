@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
     std::cout << "Documents: " << index.get_total_documents()
               << ", unique terms: " << index.get_unique_terms_count() << "\n";
 
-    Searcher searcher(index, indexer.get_analyzer(), FieldBoosts::standard(), &indexer.get_keys());
+    Searcher searcher(indexer);
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Type a query and press Enter (empty line to quit)\n> ";

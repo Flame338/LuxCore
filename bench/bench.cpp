@@ -257,10 +257,8 @@ PersistenceResult measure_persistence(const Indexer& indexer, const std::string&
     std::filesystem::remove(file);
 
     const Fuzziness fuzziness = options.fuzzy ? Fuzziness::On : Fuzziness::Off;
-    const Searcher before(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                          &indexer.get_keys(), Scoring::bm25_with(), fuzziness);
-    const Searcher after(loaded.get_index(), loaded.get_analyzer(), FieldBoosts::standard(),
-                         &loaded.get_keys(), Scoring::bm25_with(), fuzziness);
+    const Searcher before(indexer, {.scoring = Scoring::bm25_with(), .fuzziness = fuzziness});
+    const Searcher after(loaded, {.scoring = Scoring::bm25_with(), .fuzziness = fuzziness});
     for (std::size_t i = 0; i < keystrokes.size(); i += 5) {
         const std::string& text = keystrokes[i].text;
         const std::vector<SearchHit> expected_hits = before.search(text, result_limit);
@@ -340,9 +338,7 @@ int main(int argc, char** argv) {
     const double build_ms = microseconds(build_start, Clock::now()) / 1000.0;
 
     const std::vector<Keystroke> keystrokes = make_keystrokes(words, zipf, rng, options.queries, options.stop);
-    const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                            &indexer.get_keys(), Scoring::tf_idf(),
-                            options.fuzzy ? Fuzziness::On : Fuzziness::Off);
+    const Searcher searcher(indexer, {.fuzziness = options.fuzzy ? Fuzziness::On : Fuzziness::Off});
 
     const Audit audit = audit_pass(searcher, keystrokes, options.docs);
 
