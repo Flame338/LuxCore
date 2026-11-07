@@ -1,7 +1,7 @@
 #include "Searcher.h"
 #include "EditDistance.h"
+#include "MatchPlanner.h"
 #include "TermScorer.h"
-#include "Utf8.h"
 #include <cmath>
 #include <algorithm>
 #include <limits>
@@ -10,7 +10,6 @@
 namespace {
 
 constexpr double completion_weight = 0.5;
-constexpr std::size_t max_fuzzy_candidates = 20;
 
 struct PrefixRun {
     const std::vector<Posting>* postings;
@@ -28,46 +27,16 @@ struct PrefixTally {
     double completion_tf = 0;
 };
 
-std::size_t max_completions(std::size_t prefix_length) {
-    if (prefix_length <= 1) {
-        return 0;
-    }
-    if (prefix_length == 2) {
-        return 4;
-    }
-    return 32;
-}
-
-bool more_common(const TermPostings& a, const TermPostings& b) {
-    if (a.postings->size() != b.postings->size()) {
-        return a.postings->size() > b.postings->size();
-    }
-    return a.term < b.term;
-}
-
-PrefixExpansion expand(const Scope& scope, const std::string& prefix) {
+PrefixExpansion expand(const Scope& scope, const TextPlan::Prefix& prefix) {
     PrefixExpansion expansion;
     auto add_runs = [&](const std::string& term, bool exact) {
         scope.for_each_field_postings(term, [&](std::string_view, const std::vector<Posting>& postings, double weight) {
             expansion.runs.push_back({&postings, weight, exact});
         });
     };
-    add_runs(prefix, true);
-
-    const std::size_t limit = max_completions(utf8::count_code_points(prefix));
-    if (limit == 0) {
-        return expansion;
-    }
-
-    std::vector<TermPostings> completions = scope.terms_with_prefix(prefix);
-    std::erase_if(completions, [&prefix](const TermPostings& match) { return match.term == prefix; });
-
-    if (completions.size() > limit) {
-        std::partial_sort(completions.begin(), completions.begin() + limit, completions.end(), more_common);
-        completions.resize(limit);
-    }
-    for (const TermPostings& completion : completions) {
-        add_runs(std::string(completion.term), false);
+    add_runs(prefix.term, true);
+    for (const std::string& completion : prefix.completions) {
+        add_runs(completion, false);
     }
     return expansion;
 }
@@ -145,31 +114,7 @@ std::vector<SearchHit> prefix_scores(const PrefixExpansion& expansion, int total
     return hits;
 }
 
-std::vector<FuzzyMatch> fuzzy_candidates(const InvertedIndex& index, const std::string& term) {
-    const std::size_t max_distance = fuzzy_max_distance(utf8::count_code_points(term));
-    std::vector<FuzzyMatch> matches;
-    if (max_distance == 0) {
-        return matches;
-    }
-    for (FuzzyMatch& match : index.fuzzy_terms(term, max_distance)) {
-        if (match.distance > 0) {
-            matches.push_back(std::move(match));
-        }
-    }
-    auto frequency = [&index](const FuzzyMatch& match) {
-        const std::vector<Posting>* postings = index.get_postings(match.term);
-        return postings ? postings->size() : std::size_t{0};
-    };
-    std::ranges::stable_sort(matches, [&](const FuzzyMatch& a, const FuzzyMatch& b) {
-        return a.distance != b.distance ? a.distance < b.distance : frequency(a) > frequency(b);
-    });
-    if (matches.size() > max_fuzzy_candidates) {
-        matches.resize(max_fuzzy_candidates);
-    }
-    return matches;
-}
-
-DocScores fuzzy_scores(const TermScorer& scorer, const InvertedIndex& index, const std::string& term,
+DocScores fuzzy_scores(const TermScorer& scorer, const std::vector<FuzzyMatch>& candidates,
                        const DocScores& exact) {
     double exact_floor = std::numeric_limits<double>::infinity();
     for (const auto& [doc_id, score] : exact) {
@@ -177,7 +122,7 @@ DocScores fuzzy_scores(const TermScorer& scorer, const InvertedIndex& index, con
     }
 
     DocScores best;
-    for (const FuzzyMatch& match : fuzzy_candidates(index, term)) {
+    for (const FuzzyMatch& match : candidates) {
         const double factor = fuzzy_score_factor(match.distance);
         for (const auto& [doc_id, score] : scorer.score(match.term)) {
             if (exact.contains(doc_id)) {
@@ -206,12 +151,16 @@ std::vector<Suggestion> Searcher::suggest_in(std::string_view field, const std::
     return suggest_scoped(query_string, field, limit);
 }
 
+TextPlan Searcher::plan(const std::string& query_string, std::optional<std::string_view> field) const {
+    return MatchPlanner::for_text(Scope{inverted_index, boosts, field}, analyzer, fuzziness, query_string);
+}
+
 std::vector<SearchHit> Searcher::search(const std::string& query_string, int top_k) const {
-    return search_scoped(query_string, std::nullopt, top_k);
+    return search(plan(query_string), top_k);
 }
 
 std::vector<SearchHit> Searcher::search_in(std::string_view field, const std::string& query_string, int top_k) const {
-    return search_scoped(query_string, field, top_k);
+    return search(plan(query_string, field), top_k);
 }
 
 std::vector<Suggestion> Searcher::suggest_scoped(const std::string& query_string,
@@ -234,29 +183,29 @@ std::vector<Suggestion> Searcher::suggest_scoped(const std::string& query_string
     return suggestions;
 }
 
-std::vector<SearchHit> Searcher::search_scoped(const std::string& query_string,
-                                               std::optional<std::string_view> field, int top_k) const {
-    AnalyzedQuery query = analyzer.analyze_query(query_string);
+std::vector<SearchHit> Searcher::search(const TextPlan& plan, int top_k) const {
+    const std::optional<std::string_view> field =
+        plan.field() ? std::optional<std::string_view>(*plan.field()) : std::nullopt;
     const Scope scope{inverted_index, boosts, field};
     DocScores doc_scores;
     const int total_docs = scope.documents();
     const TermScorer scorer(scope, inverted_index, scoring);
 
-    for (const auto& term : query.terms) {
-        const DocScores exact = scorer.score(term);
+    for (const TextPlan::Word& word : plan.words()) {
+        const DocScores exact = scorer.score(word.term);
         for (const auto& [doc_id, score] : exact) {
             doc_scores[doc_id] += score;
         }
-        if (fuzziness == Fuzziness::On) {
-            for (const auto& [doc_id, score] : fuzzy_scores(scorer, inverted_index, term, exact)) {
+        if (!word.fuzzy.empty()) {
+            for (const auto& [doc_id, score] : fuzzy_scores(scorer, word.fuzzy, exact)) {
                 doc_scores[doc_id] += score;
             }
         }
     }
 
     std::vector<SearchHit> results;
-    if (query.prefix) {
-        results = prefix_scores(expand(scope, *query.prefix), total_docs, scoring);
+    if (plan.prefix()) {
+        results = prefix_scores(expand(scope, *plan.prefix()), total_docs, scoring);
     }
 
     if (!doc_scores.empty()) {
