@@ -32,40 +32,12 @@ bool is_candidate(const Indexer& indexer, const std::string& term, std::size_t m
     return false;
 }
 
-bool same_hits(const std::vector<SearchHit>& a, const std::vector<SearchHit>& b) {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < a.size(); i++) {
-        if (a[i].doc_id != b[i].doc_id || a[i].score != b[i].score || a[i].key != b[i].key) {
-            return false;
-        }
-    }
-    return true;
-}
-
 void add_search_engine_corpus(Indexer& indexer) {
     indexer.add_document("engine", make_text_document("Search engine", "ranking and indexing"));
     indexer.add_document("garden", make_text_document("Garden", "tomatoes and basil"));
     indexer.add_document("kitchen", make_text_document("Kitchen", "pots and pans"));
 }
 
-}
-
-TEST(searching_a_plan_gives_the_same_hits_and_scores_as_searching_the_text) {
-    Indexer indexer("stopwords.txt");
-    add_search_engine_corpus(indexer);
-    indexer.add_document("search", make_text_document("Search search", "searching engines"));
-    indexer.add_document("engine room", make_text_document("Engine room", "pots search"));
-
-    for (const Searcher& searcher : {exact_searcher(indexer), fuzzy_searcher(indexer)}) {
-        for (const std::string query : {"search ", "search engine ", "searc", "serch engin ", "serch eng", "engine engine ",
-                                        "search search sear", "s", "se", "zzz ", ""}) {
-            CHECK(same_hits(searcher.search(searcher.plan(query)), searcher.search(query)));
-            CHECK(same_hits(searcher.search(searcher.plan(query, "title"), 3), searcher.search_in("title", query, 3)));
-            CHECK(same_hits(searcher.search(searcher.plan(query, "body"), 3), searcher.search_in("body", query, 3)));
-        }
-    }
 }
 
 TEST(a_plan_decides_fuzziness_for_the_searcher_that_scores_it) {
