@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <queue>
 #include <utility>
 
@@ -137,6 +138,83 @@ DocScores fuzzy_scores(const TermScorer& scorer, const std::vector<FuzzyMatch>& 
     return best;
 }
 
+ScoredDocs by_doc(ScoredDocs docs) {
+    std::ranges::sort(docs, {}, &ScoredDoc::doc_id);
+    return docs;
+}
+
+class WordQuery : public Query {
+private:
+    const TextPlan::Word& word;
+    const std::optional<std::string>& field;
+
+public:
+    WordQuery(const TextPlan::Word& word, const std::optional<std::string>& field) : word(word), field(field) {}
+
+    ScoredDocs execute(const QueryContext& context) const override {
+        const Scope scope = context.scope(field);
+        const TermScorer scorer(scope, context.index, context.scoring);
+        const DocScores exact = scorer.score(word.term);
+
+        ScoredDocs docs;
+        docs.reserve(exact.size());
+        for (const auto& [doc_id, score] : exact) {
+            docs.push_back({doc_id, score});
+        }
+        if (!word.fuzzy.empty()) {
+            for (const auto& [doc_id, score] : fuzzy_scores(scorer, word.fuzzy, exact)) {
+                docs.push_back({doc_id, score});
+            }
+        }
+        return by_doc(std::move(docs));
+    }
+
+    void add_leaves(QueryLeaves& leaves) const override { leaves.terms.push_back({word.term, field}); }
+};
+
+class PrefixQuery : public Query {
+private:
+    const TextPlan::Prefix& prefix;
+    const std::optional<std::string>& field;
+
+public:
+    PrefixQuery(const TextPlan::Prefix& prefix, const std::optional<std::string>& field)
+        : prefix(prefix), field(field) {}
+
+    ScoredDocs execute(const QueryContext& context) const override {
+        const Scope scope = context.scope(field);
+        const std::vector<SearchHit> hits = prefix_scores(expand(scope, prefix), scope.documents(), context.scoring);
+
+        ScoredDocs docs;
+        docs.reserve(hits.size());
+        for (const SearchHit& hit : hits) {
+            docs.push_back({hit.doc_id, hit.score});
+        }
+        return docs;
+    }
+
+    void add_leaves(QueryLeaves& leaves) const override { leaves.terms.push_back({prefix.term, field}); }
+};
+
+std::unique_ptr<Query> compile(const TextPlan& plan) {
+    std::vector<std::unique_ptr<Query>> leaves;
+    for (const TextPlan::Word& word : plan.words()) {
+        leaves.push_back(std::make_unique<WordQuery>(word, plan.field()));
+    }
+    if (plan.prefix()) {
+        leaves.push_back(std::make_unique<PrefixQuery>(*plan.prefix(), plan.field()));
+    }
+    if (leaves.size() == 1) {
+        return std::move(leaves.front());
+    }
+
+    auto any_of = std::make_unique<BooleanQuery>();
+    for (std::unique_ptr<Query>& leaf : leaves) {
+        any_of->add(Occur::Should, std::move(leaf));
+    }
+    return any_of;
+}
+
 }
 
 Searcher::Searcher(const Indexer& indexer, SearchOptions options)
@@ -201,46 +279,7 @@ std::vector<Suggestion> Searcher::suggest_scoped(const std::string& query_string
 }
 
 std::vector<SearchHit> Searcher::search(const TextPlan& plan, int top_k) const {
-    const std::optional<std::string_view> field =
-        plan.field() ? std::optional<std::string_view>(*plan.field()) : std::nullopt;
-    const Scope scope{inverted_index, options.boosts, field};
-    DocScores doc_scores;
-    const int total_docs = scope.documents();
-    const TermScorer scorer(scope, inverted_index, options.scoring);
-
-    for (const TextPlan::Word& word : plan.words()) {
-        const DocScores exact = scorer.score(word.term);
-        for (const auto& [doc_id, score] : exact) {
-            doc_scores[doc_id] += score;
-        }
-        if (!word.fuzzy.empty()) {
-            for (const auto& [doc_id, score] : fuzzy_scores(scorer, word.fuzzy, exact)) {
-                doc_scores[doc_id] += score;
-            }
-        }
-    }
-
-    std::vector<SearchHit> results;
-    if (plan.prefix()) {
-        results = prefix_scores(expand(scope, *plan.prefix()), total_docs, options.scoring);
-    }
-
-    if (!doc_scores.empty()) {
-        for (const SearchHit& hit : results) {
-            doc_scores[hit.doc_id] += hit.score;
-        }
-        results.clear();
-        results.reserve(doc_scores.size());
-        for (const auto& [doc_id, score] : doc_scores) {
-            results.push_back({doc_id, score});
-        }
-    }
-
-    TopKCollector collector(top_k > 0 ? static_cast<std::size_t>(top_k) : 0);
-    for (SearchHit& hit : results) {
-        collector.offer(std::move(hit));
-    }
-    return finish(collector);
+    return search(*compile(plan), top_k);
 }
 
 std::vector<SearchHit> Searcher::search(const Query& query, int top_k) const {
