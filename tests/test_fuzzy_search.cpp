@@ -7,12 +7,11 @@
 namespace {
 
 Searcher fuzzy_searcher(const Indexer& indexer, Scoring scoring = Scoring::tf_idf()) {
-    return Searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(), &indexer.get_keys(),
-                    scoring, Fuzziness::On);
+    return Searcher(indexer, {.scoring = scoring, .fuzziness = Fuzziness::On});
 }
 
 Searcher exact_searcher(const Indexer& indexer) {
-    return Searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(), &indexer.get_keys());
+    return Searcher(indexer);
 }
 
 std::string keys_of(const Searcher& searcher, const std::string& query) {

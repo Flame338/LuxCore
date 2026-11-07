@@ -20,8 +20,7 @@ struct Index::Impl {
     Indexer indexer;
 
     Searcher searcher() const {
-        return Searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(), &indexer.get_keys(),
-                        Scoring::bm25_with(), Fuzziness::On);
+        return Searcher(indexer, {.scoring = Scoring::bm25_with(), .fuzziness = Fuzziness::On});
     }
 };
 

@@ -1,6 +1,5 @@
 #include "TestFramework.h"
 
-#include "IndexSearcher.h"
 #include "Indexer.h"
 #include "QueryParser.h"
 #include "Searcher.h"
@@ -19,8 +18,8 @@ struct QueryEngine {
         return indexer.add_document(make_text_document(title, body));
     }
 
-    IndexSearcher searcher(Scoring scoring = Scoring::tf_idf(), FieldBoosts boosts = FieldBoosts::standard()) const {
-        return IndexSearcher(indexer.get_index(), std::move(boosts), &indexer.get_keys(), scoring);
+    Searcher searcher(Scoring scoring = Scoring::tf_idf(), FieldBoosts boosts = FieldBoosts::standard()) const {
+        return Searcher(indexer, {.boosts = std::move(boosts), .scoring = scoring});
     }
 
     std::string ids(const Query& query) const {
@@ -304,8 +303,7 @@ TEST(query_scores_match_the_searcher_for_tf_idf_and_bm25) {
     engine.add("nothing");
 
     for (const Scoring scoring : {Scoring::tf_idf(), Scoring::bm25_with()}) {
-        const Searcher searcher(engine.indexer.get_index(), engine.indexer.get_analyzer(), FieldBoosts::standard(),
-                                nullptr, scoring);
+        const Searcher searcher(engine.indexer.get_index(), engine.indexer.get_analyzer(), {.scoring = scoring});
 
         const std::vector<SearchHit> expected = searcher.search("fox ", 10);
         const std::vector<SearchHit> actual = engine.searcher(scoring).search(*term("fox"), 10);
@@ -356,12 +354,12 @@ TEST(field_boosts_and_scoring_apply_to_phrases) {
              "[0][1]");
 }
 
-TEST(index_searcher_returns_top_k_hits_with_keys) {
+TEST(searcher_runs_a_query_tree_with_top_k_and_keys) {
     Indexer indexer("stopwords.txt");
     indexer.add_document("a", make_text_document("", "fox"));
     indexer.add_document("b", make_text_document("", "fox fox"));
     indexer.add_document("c", make_text_document("", "fox"));
-    const IndexSearcher searcher(indexer.get_index(), FieldBoosts::standard(), &indexer.get_keys());
+    const Searcher searcher(indexer);
 
     const std::vector<SearchHit> hits = searcher.search(TermQuery("fox"), 2);
     CHECK_EQ(hits.size(), static_cast<std::size_t>(2));

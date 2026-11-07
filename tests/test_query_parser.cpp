@@ -1,8 +1,8 @@
 #include "TestFramework.h"
 
-#include "IndexSearcher.h"
 #include "Indexer.h"
 #include "QueryParser.h"
+#include "Searcher.h"
 
 #include <string>
 
@@ -198,7 +198,7 @@ TEST(parsed_queries_search_an_index_end_to_end) {
     indexer.add_document("b", make_text_document("Red bear", "a red fox and a brown bear"));
     indexer.add_document("c", make_text_document("Fox tales", "red fox sleeps"));
     const QueryParser parser(indexer.get_analyzer());
-    const IndexSearcher searcher(indexer.get_index(), FieldBoosts::standard(), &indexer.get_keys());
+    const Searcher searcher(indexer);
 
     auto keys_of = [&](const std::string& text) {
         const ParseResult parsed = parser.parse(text);

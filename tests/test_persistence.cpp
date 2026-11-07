@@ -3,7 +3,6 @@
 #include "ByteIO.h"
 #include "DocumentStore.h"
 #include "Indexer.h"
-#include "IndexSearcher.h"
 #include "LuxCore.h"
 #include "QueryParser.h"
 #include "Searcher.h"
@@ -107,8 +106,7 @@ const char* const queries[] = {"rocket",   "rock",       "rcket launch", "cafe",
                                "garden notes", "snake case", "http server"};
 
 std::string run_query(const Indexer& indexer, const Query& query) {
-    const IndexSearcher searcher(indexer.get_index(), FieldBoosts::standard(), &indexer.get_keys(),
-                                 Scoring::bm25_with());
+    const Searcher searcher(indexer, {.scoring = Scoring::bm25_with()});
     std::string text = hits_text(searcher.search(query, 10)) + " ids=";
     for (const int id : searcher.matching_ids(query)) {
         text += std::to_string(id) + ",";
@@ -120,8 +118,7 @@ std::string results_of(const Indexer& indexer) {
     std::string text;
     for (const Scoring& scoring : {Scoring::tf_idf(), Scoring::bm25_with()}) {
         for (const Fuzziness fuzziness : {Fuzziness::Off, Fuzziness::On}) {
-            const Searcher searcher(indexer.get_index(), indexer.get_analyzer(), FieldBoosts::standard(),
-                                    &indexer.get_keys(), scoring, fuzziness);
+            const Searcher searcher(indexer, {.scoring = scoring, .fuzziness = fuzziness});
             for (const char* query : queries) {
                 text += std::string(query) + " => " + hits_text(searcher.search(query, 10)) + " | ";
                 for (const Suggestion& suggestion : searcher.suggest(query, 5)) {
