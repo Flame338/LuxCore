@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/tools/failcap/failcap.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
