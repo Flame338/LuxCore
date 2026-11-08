@@ -28,9 +28,14 @@ struct lux_text {
 namespace {
 
 template <typename Body>
-lux_status guarded(Body body) {
+lux_status guarded(Body body, std::size_t* error_offset = nullptr) {
     try {
         return body();
+    } catch (const luxcore::QueryError& error) {
+        if (error_offset != nullptr) {
+            *error_offset = error.offset();
+        }
+        return LUX_INVALID_QUERY;
     } catch (const std::invalid_argument&) {
         return LUX_INVALID_ARGUMENT;
     } catch (const luxcore::IoError&) {
@@ -42,6 +47,59 @@ lux_status guarded(Body body) {
     } catch (...) {
         return LUX_INTERNAL_ERROR;
     }
+}
+
+luxcore::IndexConfig index_config(const lux_config* config) {
+    luxcore::IndexConfig result;
+    if (config != nullptr) {
+        result.positions = config->positions != 0;
+    }
+    return result;
+}
+
+void override_text(std::string& target, const char* data, std::size_t length) {
+    if (data != nullptr) {
+        target.assign(data, length);
+    }
+}
+
+luxcore::SnippetOptions snippet_options(const lux_snippet_options* options) {
+    luxcore::SnippetOptions result;
+    if (options != nullptr) {
+        if (options->length != 0) {
+            result.length = options->length;
+        }
+        override_text(result.start_marker, options->start_marker, options->start_marker_length);
+        override_text(result.end_marker, options->end_marker, options->end_marker_length);
+        override_text(result.ellipsis, options->ellipsis, options->ellipsis_length);
+    }
+    return result;
+}
+
+template <typename Snippet>
+lux_status snippet_into(const lux_index* index, const char* key, std::size_t key_length, const char* field,
+                        std::size_t field_length, const char* query, std::size_t query_length,
+                        const lux_snippet_options* options, lux_text** out, std::size_t* error_offset,
+                        Snippet snippet) {
+    if (error_offset != nullptr) {
+        *error_offset = 0;
+    }
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (index == nullptr || key == nullptr || field == nullptr || query == nullptr || out == nullptr) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        std::optional<std::string> value =
+            snippet(index->index, std::string(key, key_length), std::string(field, field_length),
+                    std::string(query, query_length), snippet_options(options));
+        if (!value) {
+            return LUX_NOT_FOUND;
+        }
+        *out = new lux_text{std::move(*value)};
+        return LUX_OK;
+    }, error_offset);
 }
 
 }
@@ -62,17 +120,23 @@ const char* lux_status_message(lux_status status) {
             return "i/o error";
         case LUX_INVALID_FORMAT:
             return "not a valid LuxCore index file";
+        case LUX_INVALID_QUERY:
+            return "invalid query";
     }
     return "unknown status";
 }
 
 lux_status lux_index_create(lux_index** out) {
+    return lux_index_create_with(nullptr, out);
+}
+
+lux_status lux_index_create_with(const lux_config* config, lux_index** out) {
     if (out == nullptr) {
         return LUX_INVALID_ARGUMENT;
     }
     *out = nullptr;
     return guarded([&] {
-        *out = new lux_index();
+        *out = new lux_index{luxcore::Index(index_config(config))};
         return LUX_OK;
     });
 }
@@ -121,6 +185,10 @@ lux_status lux_index_save(const lux_index* index, const char* path, std::size_t 
 }
 
 lux_status lux_index_load(const char* path, std::size_t path_length, lux_index** out) {
+    return lux_index_load_with(path, path_length, nullptr, out);
+}
+
+lux_status lux_index_load_with(const char* path, std::size_t path_length, const lux_config* config, lux_index** out) {
     if (out != nullptr) {
         *out = nullptr;
     }
@@ -128,7 +196,7 @@ lux_status lux_index_load(const char* path, std::size_t path_length, lux_index**
         return LUX_INVALID_ARGUMENT;
     }
     return guarded([&] {
-        *out = new lux_index{luxcore::Index::load(std::string(path, path_length))};
+        *out = new lux_index{luxcore::Index::load(std::string(path, path_length), index_config(config))};
         return LUX_OK;
     });
 }
@@ -163,6 +231,43 @@ lux_status lux_index_search(const lux_index* index, const char* query, std::size
         *out = new lux_hits{index->index.search(std::string(query, query_length), limit)};
         return LUX_OK;
     });
+}
+
+lux_status lux_index_search_query(const lux_index* index, const char* query, std::size_t query_length,
+                                  std::size_t limit, lux_hits** out, std::size_t* error_offset) {
+    if (error_offset != nullptr) {
+        *error_offset = 0;
+    }
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (index == nullptr || query == nullptr || out == nullptr) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        *out = new lux_hits{index->index.search_query(std::string(query, query_length), limit)};
+        return LUX_OK;
+    }, error_offset);
+}
+
+lux_status lux_index_snippet(const lux_index* index, const char* key, std::size_t key_length, const char* field,
+                             std::size_t field_length, const char* query, std::size_t query_length,
+                             const lux_snippet_options* options, lux_text** out) {
+    return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out, nullptr,
+                        [](const luxcore::Index& target, const std::string& key_text, const std::string& field_text,
+                           const std::string& query_text, const luxcore::SnippetOptions& settings) {
+                            return target.snippet(key_text, field_text, query_text, settings);
+                        });
+}
+
+lux_status lux_index_snippet_query(const lux_index* index, const char* key, std::size_t key_length, const char* field,
+                                   std::size_t field_length, const char* query, std::size_t query_length,
+                                   const lux_snippet_options* options, lux_text** out, std::size_t* error_offset) {
+    return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out, error_offset,
+                        [](const luxcore::Index& target, const std::string& key_text, const std::string& field_text,
+                           const std::string& query_text, const luxcore::SnippetOptions& settings) {
+                            return target.snippet_query(key_text, field_text, query_text, settings);
+                        });
 }
 
 lux_status lux_index_suggest(const lux_index* index, const char* query, std::size_t query_length, std::size_t limit,

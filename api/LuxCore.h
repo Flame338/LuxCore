@@ -19,14 +19,35 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+class QueryError : public std::invalid_argument {
+public:
+    QueryError(const std::string& message, std::size_t offset);
+    std::size_t offset() const;
+
+private:
+    std::size_t error_offset;
+};
+
 struct Hit {
     std::string key;
     double score;
 };
 
+struct IndexConfig {
+    bool positions = false;
+};
+
+struct SnippetOptions {
+    std::size_t length = 160;
+    std::string start_marker = "<em>";
+    std::string end_marker = "</em>";
+    std::string ellipsis = "...";
+};
+
 class Index {
 public:
     Index();
+    explicit Index(IndexConfig config);
     ~Index();
     Index(Index&&) noexcept;
     Index& operator=(Index&&) noexcept;
@@ -41,8 +62,14 @@ public:
     std::vector<Hit> search(const std::string& query, std::size_t limit = 10) const;
     std::vector<std::string> suggest(const std::string& query, std::size_t limit = 5) const;
 
+    std::vector<Hit> search_query(const std::string& text, std::size_t limit = 10) const;
+    std::optional<std::string> snippet(const std::string& key, const std::string& field, const std::string& text,
+                                       const SnippetOptions& options = {}) const;
+    std::optional<std::string> snippet_query(const std::string& key, const std::string& field, const std::string& text,
+                                             const SnippetOptions& options = {}) const;
+
     void save(const std::string& path) const;
-    static Index load(const std::string& path);
+    static Index load(const std::string& path, IndexConfig config = {});
 
 private:
     struct Impl;

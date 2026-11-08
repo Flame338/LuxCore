@@ -2,7 +2,11 @@
 
 #include "EditDistance.h"
 #include "FairSharedMutex.h"
+#include "Highlighter.h"
 #include "Indexer.h"
+#include "MatchPlan.h"
+#include "Query.h"
+#include "QueryParser.h"
 #include "Scoring.h"
 #include "Searcher.h"
 
@@ -11,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
@@ -19,12 +24,53 @@
 
 namespace luxcore {
 
+QueryError::QueryError(const std::string& message, std::size_t offset)
+    : std::invalid_argument(message), error_offset(offset) {}
+
+std::size_t QueryError::offset() const {
+    return error_offset;
+}
+
 struct Index::Impl {
-    Indexer indexer{std::string(), IndexOptions{.positions = false}};
+    Indexer indexer;
+    bool positions;
     mutable FairSharedMutex mutex;
+
+    explicit Impl(IndexConfig config)
+        : indexer(std::string(), IndexOptions{.positions = config.positions}), positions(config.positions) {}
 
     Searcher searcher() const {
         return Searcher(indexer, {.scoring = Scoring::bm25_with(), .fuzziness = Fuzziness::On});
+    }
+
+    std::unique_ptr<Query> parse(const std::string& text) const {
+        ParseResult parsed = QueryParser(indexer.get_analyzer()).parse(text);
+        if (!parsed.ok()) {
+            throw QueryError(parsed.error->message, parsed.error->offset);
+        }
+        if (!positions) {
+            QueryLeaves leaves;
+            parsed.query->add_leaves(leaves);
+            if (!leaves.phrases.empty()) {
+                throw QueryError(
+                    "phrase queries need an index built with IndexConfig{.positions = true}, and words joined by "
+                    "a hyphen or similar punctuation count as phrases",
+                    0);
+            }
+        }
+        return std::move(parsed.query);
+    }
+
+    std::optional<std::string> stored_text(const std::string& key, const std::string& field) const {
+        const std::optional<int> id = indexer.find_id(key);
+        if (!id) {
+            return std::nullopt;
+        }
+        const std::optional<std::string_view> found = indexer.stored_value(*id, field);
+        if (!found) {
+            return std::nullopt;
+        }
+        return std::string(*found);
     }
 };
 
@@ -38,9 +84,15 @@ std::filesystem::path path_from_utf8(const std::string& text) {
     return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
 }
 
+HighlightOptions highlight_options(const SnippetOptions& options) {
+    return {options.length, options.start_marker, options.end_marker, options.ellipsis};
 }
 
-Index::Index() : impl(std::make_unique<Impl>()) {}
+}
+
+Index::Index() : Index(IndexConfig{}) {}
+
+Index::Index(IndexConfig config) : impl(std::make_unique<Impl>(config)) {}
 
 Index::~Index() = default;
 
@@ -66,15 +118,7 @@ std::size_t Index::size() const {
 
 std::optional<std::string> Index::stored(const std::string& key, const std::string& field) const {
     std::shared_lock lock(impl->mutex);
-    const std::optional<int> id = impl->indexer.find_id(key);
-    if (!id) {
-        return std::nullopt;
-    }
-    const std::optional<std::string_view> found = impl->indexer.stored_value(*id, field);
-    if (!found) {
-        return std::nullopt;
-    }
-    return std::string(*found);
+    return impl->stored_text(key, field);
 }
 
 std::vector<Hit> Index::search(const std::string& query, std::size_t limit) const {
@@ -95,6 +139,39 @@ std::vector<std::string> Index::suggest(const std::string& query, std::size_t li
     return terms;
 }
 
+std::vector<Hit> Index::search_query(const std::string& text, std::size_t limit) const {
+    std::shared_lock lock(impl->mutex);
+    const std::unique_ptr<Query> query = impl->parse(text);
+    std::vector<Hit> hits;
+    for (const SearchHit& hit : impl->searcher().search(*query, clamp_to_int(limit))) {
+        hits.push_back({hit.key, hit.score});
+    }
+    return hits;
+}
+
+std::optional<std::string> Index::snippet(const std::string& key, const std::string& field, const std::string& text,
+                                          const SnippetOptions& options) const {
+    std::shared_lock lock(impl->mutex);
+    const std::optional<std::string> stored = impl->stored_text(key, field);
+    if (!stored) {
+        return std::nullopt;
+    }
+    const TextPlan plan = impl->searcher().plan(text);
+    return Highlighter(highlight_options(options)).snippet(*stored, plan);
+}
+
+std::optional<std::string> Index::snippet_query(const std::string& key, const std::string& field,
+                                                const std::string& text, const SnippetOptions& options) const {
+    std::shared_lock lock(impl->mutex);
+    const std::unique_ptr<Query> query = impl->parse(text);
+    const std::optional<std::string> stored = impl->stored_text(key, field);
+    if (!stored) {
+        return std::nullopt;
+    }
+    const MatchPlan plan = make_match_plan(impl->indexer.get_analyzer(), *query, field);
+    return Highlighter(highlight_options(options)).snippet(*stored, plan);
+}
+
 void Index::save(const std::string& path) const {
     std::string bytes;
     {
@@ -112,7 +189,7 @@ void Index::save(const std::string& path) const {
     }
 }
 
-Index Index::load(const std::string& path) {
+Index Index::load(const std::string& path, IndexConfig config) {
     const std::filesystem::path file = path_from_utf8(path);
     std::error_code error;
     if (!std::filesystem::is_regular_file(file, error)) {
@@ -132,9 +209,9 @@ Index Index::load(const std::string& path) {
         throw IoError("LuxCore: failed to read " + path);
     }
 
-    Index index;
+    Index index(config);
     try {
-        index.impl->indexer = Indexer::deserialize(bytes, std::string(), IndexOptions{.positions = false});
+        index.impl->indexer = Indexer::deserialize(bytes, std::string(), IndexOptions{.positions = config.positions});
     } catch (const std::runtime_error& error) {
         throw FormatError(error.what());
     }
