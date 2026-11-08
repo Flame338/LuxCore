@@ -19,5 +19,11 @@ int main(int argc, char** argv) {
     for (const luxcore::Hit& hit : hits) {
         std::cout << "  " << hit.key << "  " << *index.stored(hit.key, "title") << "\n";
     }
+
+    const std::string syntax = "+book -train";
+    std::cout << "Query syntax \"" << syntax << "\"\n";
+    for (const luxcore::Hit& hit : index.search_query(syntax)) {
+        std::cout << "  " << hit.key << "  " << *index.snippet_query(hit.key, "body", syntax) << "\n";
+    }
     return 0;
 }
