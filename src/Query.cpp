@@ -23,7 +23,34 @@ ScoredDocs intersect(const ScoredDocs& a, const ScoredDocs& b) {
     return result;
 }
 
+constexpr std::size_t skew_ratio = 8;
+
+ScoredDocs unite_skewed(const ScoredDocs& small, const ScoredDocs& large) {
+    ScoredDocs result;
+    result.reserve(small.size() + large.size());
+    auto rest = large.begin();
+    for (const ScoredDoc& doc : small) {
+        const auto found = std::ranges::lower_bound(rest, large.end(), doc.doc_id, {}, &ScoredDoc::doc_id);
+        result.insert(result.end(), rest, found);
+        if (found != large.end() && found->doc_id == doc.doc_id) {
+            result.push_back({doc.doc_id, found->score + doc.score});
+            rest = found + 1;
+        } else {
+            result.push_back(doc);
+            rest = found;
+        }
+    }
+    result.insert(result.end(), rest, large.end());
+    return result;
+}
+
 ScoredDocs unite(const ScoredDocs& a, const ScoredDocs& b) {
+    if (a.size() * skew_ratio <= b.size()) {
+        return unite_skewed(a, b);
+    }
+    if (b.size() * skew_ratio <= a.size()) {
+        return unite_skewed(b, a);
+    }
     ScoredDocs result;
     result.reserve(a.size() + b.size());
     auto left = a.begin();
@@ -126,8 +153,8 @@ ScoredDocs BooleanQuery::execute(const QueryContext& context) const {
 
     ScoredDocs result;
     if (must.empty()) {
-        for (const ScoredDocs& matches : should) {
-            result = unite(result, matches);
+        for (ScoredDocs& matches : should) {
+            result = result.empty() ? std::move(matches) : unite(result, matches);
         }
     } else {
         std::ranges::sort(must, {}, [](const ScoredDocs& matches) { return matches.size(); });
