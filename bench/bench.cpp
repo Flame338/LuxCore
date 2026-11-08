@@ -34,6 +34,7 @@ struct Options {
     int fuzzy = 0;
     int indexing = 0;
     int scaling = 0;
+    int slowest = 0;
     int writer_pause_us = 200;
     std::uint64_t seed = 12345;
 };
@@ -520,6 +521,39 @@ bool measure_scaling(const Options& options, const std::vector<std::string>& wor
     return clean;
 }
 
+void report_slowest(const luxcore::Index& index, const std::vector<Keystroke>& keystrokes, int count,
+                    std::size_t& sink) {
+    struct Cost {
+        std::string text;
+        double search_us;
+        double suggest_us;
+    };
+    std::vector<Cost> costs;
+    for (const Keystroke& keystroke : keystrokes) {
+        double search_best = 1e18;
+        double suggest_best = 1e18;
+        for (int repeat = 0; repeat < 5; repeat++) {
+            const Clock::time_point start = Clock::now();
+            const std::vector<luxcore::Hit> hits = index.search(keystroke.text, result_limit);
+            const Clock::time_point middle = Clock::now();
+            const std::vector<std::string> suggestions = index.suggest(keystroke.text, suggestion_limit);
+            const Clock::time_point end = Clock::now();
+            sink += hits.size() + suggestions.size();
+            search_best = std::min(search_best, microseconds(start, middle));
+            suggest_best = std::min(suggest_best, microseconds(middle, end));
+        }
+        costs.push_back({keystroke.text, search_best, suggest_best});
+    }
+    std::sort(costs.begin(), costs.end(), [](const Cost& a, const Cost& b) {
+        return a.search_us + a.suggest_us > b.search_us + b.suggest_us;
+    });
+    const std::size_t shown = std::min<std::size_t>(static_cast<std::size_t>(count), costs.size());
+    for (std::size_t i = 0; i < shown; i++) {
+        std::cout << "slowest \"" << costs[i].text << "\" search_us=" << costs[i].search_us
+                  << " suggest_us=" << costs[i].suggest_us << "\n";
+    }
+}
+
 bool measure_indexing(const Options& options, const std::vector<std::string>& words,
                       std::discrete_distribution<int> zipf, std::mt19937_64 corpus_rng,
                       const std::vector<Keystroke>& keystrokes) {
@@ -531,6 +565,9 @@ bool measure_indexing(const Options& options, const std::vector<std::string>& wo
     timed_index_passes(index, keystrokes, 1, sink);
     const std::size_t docs_before = index.size();
     const std::vector<double> idle = timed_index_passes(index, keystrokes, options.passes, sink);
+    if (options.slowest > 0) {
+        report_slowest(index, keystrokes, options.slowest, sink);
+    }
 
     const Clock::time_point writing_start = Clock::now();
     BackgroundWriter writer(index, pool, options.writer_pause_us);
@@ -578,6 +615,7 @@ Options parse(int argc, char** argv) {
         if (flag == "--fuzzy") options.fuzzy = static_cast<int>(value);
         if (flag == "--indexing") options.indexing = static_cast<int>(value);
         if (flag == "--scaling") options.scaling = static_cast<int>(value);
+        if (flag == "--slowest") options.slowest = static_cast<int>(value);
         if (flag == "--writer_pause_us") options.writer_pause_us = static_cast<int>(value);
         if (flag == "--seed") options.seed = static_cast<std::uint64_t>(value);
     }
