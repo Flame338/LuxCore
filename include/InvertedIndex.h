@@ -47,7 +47,7 @@ struct IndexMemory {
 
 struct TermPostings {
     std::string_view term;
-    const std::vector<Posting>* postings;
+    std::size_t document_frequency;
 };
 
 struct FieldPostings {
@@ -62,7 +62,7 @@ using FieldTermPositions = std::unordered_map<std::string, TermPositions>;
 
 class InvertedIndex {
     private:
-        using PostingMap = std::map<std::string, std::vector<Posting>, std::less<>>;
+        using FrequencyMap = std::map<std::string, std::uint32_t, std::less<>>;
         using PostingListMap = std::map<std::string, PostingList, std::less<>>;
 
         struct FieldIndex {
@@ -79,11 +79,13 @@ class InvertedIndex {
             std::vector<const std::string*> terms;
         };
 
-        PostingMap index;
+        FrequencyMap doc_freqs;
         FuzzyIndex fuzzy;
         FieldMap fields;
         std::unordered_map<int, std::vector<IndexedField>> doc_fields;
         int total_documents = 0;
+
+        static std::vector<const std::string*> distinct_terms(const std::vector<IndexedField>& indexed);
 
         template <typename TermMap>
         void add_fields(int doc_id, const std::unordered_map<std::string, TermMap>& fields_to_add);
@@ -98,7 +100,7 @@ class InvertedIndex {
         void add_document(int doc_id, const FieldTermFreqs& field_term_freqs);
         void add_document(int doc_id, const FieldTermPositions& field_term_positions);
         void remove_document(int doc_id);
-        const std::vector<Posting>* get_postings(const std::string& term) const;
+        std::size_t get_document_frequency(const std::string& term) const;
         const std::vector<Posting>* get_postings(std::string_view field, const std::string& term) const;
         const PostingList* get_posting_list(std::string_view field, const std::string& term) const;
         std::vector<std::string_view> field_names() const;
@@ -115,7 +117,7 @@ class InvertedIndex {
         int get_field_length(std::string_view field, int doc_id) const;
         std::span<const int> get_field_lengths(std::string_view field) const;
         double get_average_field_length(std::string_view field) const;
-        std::size_t get_unique_terms_count() const { return index.size(); }
+        std::size_t get_unique_terms_count() const { return doc_freqs.size(); }
         IndexMemory memory_usage() const;
 
         void write(ByteWriter& writer) const;

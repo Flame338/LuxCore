@@ -140,13 +140,13 @@ TEST(prefix_fuzzy_and_global_lookups_still_work_with_positions) {
         found = found || match.term == "search";
     }
     CHECK(found);
-    CHECK(index.get_postings("level") == nullptr);
-    CHECK_EQ(index.get_postings("search")->size(), static_cast<std::size_t>(1));
+    CHECK_EQ(index.get_document_frequency("level"), static_cast<std::size_t>(0));
+    CHECK_EQ(index.get_document_frequency("search"), static_cast<std::size_t>(1));
 }
 
 TEST(memory_usage_counts_positions_separately_from_postings) {
     InvertedIndex positional;
     positional.add_document(1, body({{"fox", {0, 1, 2}}}));
     CHECK(positional.memory_usage().position_bytes >= 4 * sizeof(std::uint32_t));
-    CHECK(positional.memory_usage().posting_bytes >= 2 * sizeof(Posting));
+    CHECK(positional.memory_usage().posting_bytes >= sizeof(Posting));
 }

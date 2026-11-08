@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include "CombinedPostings.h"
 #include "ByteIO.h"
 #include "DocumentStore.h"
 #include "Indexer.h"
@@ -62,8 +63,8 @@ std::string describe_index(const InvertedIndex& index, int ids) {
     }
     text += "combined\n";
     for (const TermPostings& match : index.terms_with_prefix("")) {
-        text += " " + std::string(match.term) + ":";
-        for (const Posting& posting : *match.postings) {
+        text += " " + std::string(match.term) + " df=" + std::to_string(match.document_frequency) + ":";
+        for (const Posting& posting : combined_postings(index, std::string(match.term))) {
             text += "(" + std::to_string(posting.doc_id) + "x" + std::to_string(posting.term_frequency) + ")";
         }
         text += "\n";
@@ -558,7 +559,7 @@ TEST(a_loaded_index_uses_the_analyzer_it_is_given) {
     plain.add_document("a", make_text_document("Plans", "to be or not to be"));
     Indexer loaded = Indexer::deserialize(plain.serialize(), "stopwords.txt");
 
-    CHECK(loaded.get_index().get_postings("to") != nullptr);
+    CHECK(loaded.get_index().get_document_frequency("to") > 0);
     CHECK(Searcher(loaded.get_index(), loaded.get_analyzer()).search("to be ").empty());
     CHECK(!Searcher(plain.get_index(), plain.get_analyzer()).search("to be ").empty());
 }
@@ -845,7 +846,7 @@ TEST(a_sparse_store_with_many_removed_ids_loads) {
     const Indexer loaded = Indexer::deserialize(indexer.serialize());
 
     CHECK_EQ(loaded.get_index().get_total_documents(), 1);
-    CHECK_EQ(loaded.get_index().get_postings("t")->size(), static_cast<std::size_t>(1));
+    CHECK_EQ(loaded.get_index().get_document_frequency("t"), static_cast<std::size_t>(1));
 }
 
 TEST(doc_ids_in_postings_are_stored_as_gaps_of_about_one_byte) {

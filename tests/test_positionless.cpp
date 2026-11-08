@@ -73,9 +73,9 @@ TEST(positionless_indexer_removes_and_replaces_documents) {
     }
 
     CHECK_EQ(counted.get_index().get_total_documents(), 4);
-    CHECK(counted.get_index().get_postings("days") == nullptr);
-    CHECK(counted.get_index().get_postings("chased") == nullptr);
-    CHECK(counted.get_index().get_postings("fox") != nullptr);
+    CHECK_EQ(counted.get_index().get_document_frequency("days"), static_cast<std::size_t>(0));
+    CHECK_EQ(counted.get_index().get_document_frequency("chased"), static_cast<std::size_t>(0));
+    CHECK(counted.get_index().get_document_frequency("fox") > 0);
     CHECK_EQ(counted.get_index().get_field_length("body", 0), 3);
     CHECK_EQ(counted.get_index().get_field_length("body", 1), 0);
     CHECK_EQ(counted.get_index().get_average_field_length("body"), positioned.get_index().get_average_field_length("body"));

@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include "CombinedPostings.h"
 #include "Indexer.h"
 #include "Searcher.h"
 
@@ -17,12 +18,12 @@ std::string keys_of(const Indexer& indexer, const std::string& query) {
 }
 
 std::string postings_text(const Indexer& indexer, const std::string& term) {
-    const std::vector<Posting>* postings = indexer.get_index().get_postings(term);
-    if (postings == nullptr) {
+    const std::vector<Posting> postings = combined_postings(indexer.get_index(), term);
+    if (postings.empty()) {
         return "-";
     }
     std::string text;
-    for (const Posting& posting : *postings) {
+    for (const Posting& posting : postings) {
         text += "(" + std::to_string(posting.doc_id) + ":" + std::to_string(posting.term_frequency) + ")";
     }
     return text;

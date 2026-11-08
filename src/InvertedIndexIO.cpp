@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <iterator>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -86,27 +87,32 @@ PostingList read_posting_list(ByteReader& reader, const DocumentStore& store, Ta
     return list;
 }
 
-void merge_postings(std::vector<Posting>& target, const std::vector<Posting>& source) {
-    std::vector<Posting> merged;
-    merged.reserve(target.size() + source.size());
-    std::size_t a = 0;
-    std::size_t b = 0;
-    while (a < target.size() || b < source.size()) {
-        if (b == source.size() || (a < target.size() && target[a].doc_id < source[b].doc_id)) {
-            merged.push_back(target[a++]);
-        } else if (a == target.size() || source[b].doc_id < target[a].doc_id) {
-            merged.push_back(source[b++]);
-        } else {
-            const long long total = static_cast<long long>(target[a].term_frequency) + source[b].term_frequency;
-            if (total > INT_MAX) {
-                fail_format("term frequency is out of range");
+std::size_t shared_documents(const std::vector<const std::vector<Posting>*>& lists) {
+    if (lists.size() == 1) {
+        return lists.front()->size();
+    }
+    if (lists.size() == 2) {
+        const std::vector<Posting>& small = lists[0]->size() <= lists[1]->size() ? *lists[0] : *lists[1];
+        const std::vector<Posting>& large = lists[0]->size() <= lists[1]->size() ? *lists[1] : *lists[0];
+        std::size_t common = 0;
+        auto from = large.begin();
+        for (const Posting& posting : small) {
+            from = std::ranges::lower_bound(from, large.end(), posting.doc_id, {}, &Posting::doc_id);
+            if (from == large.end()) {
+                break;
             }
-            merged.push_back({target[a].doc_id, static_cast<int>(total)});
-            a++;
-            b++;
+            common += from->doc_id == posting.doc_id ? 1 : 0;
+        }
+        return small.size() + large.size() - common;
+    }
+    std::vector<int> ids;
+    for (const std::vector<Posting>* list : lists) {
+        for (const Posting& posting : *list) {
+            ids.push_back(posting.doc_id);
         }
     }
-    target = std::move(merged);
+    std::ranges::sort(ids);
+    return static_cast<std::size_t>(std::ranges::unique(ids).begin() - ids.begin());
 }
 
 }
@@ -190,20 +196,28 @@ InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store
 
         std::ranges::fill(tallies.lengths, 0);
         std::ranges::fill(tallies.term_counts, 0);
+    }
 
-        for (const auto& [term, list] : field_index.terms) {
-            auto it = result.index.lower_bound(term);
-            if (it == result.index.end() || it->first != term) {
-                result.index.emplace_hint(it, term, list.postings);
-            } else {
-                merge_postings(it->second, list.postings);
+    for (auto field_it = result.fields.begin(); field_it != result.fields.end(); ++field_it) {
+        for (const auto& [term, list] : field_it->second.terms) {
+            const auto slot = result.doc_freqs.lower_bound(term);
+            if (slot != result.doc_freqs.end() && slot->first == term) {
+                continue;
             }
+            std::vector<const std::vector<Posting>*> sharing{&list.postings};
+            for (auto later = std::next(field_it); later != result.fields.end(); ++later) {
+                const auto found = later->second.terms.find(term);
+                if (found != later->second.terms.end()) {
+                    sharing.push_back(&found->second.postings);
+                }
+            }
+            result.doc_freqs.emplace_hint(slot, term, static_cast<std::uint32_t>(shared_documents(sharing)));
         }
     }
 
     std::vector<std::string> terms;
-    terms.reserve(result.index.size());
-    for (const auto& entry : result.index) {
+    terms.reserve(result.doc_freqs.size());
+    for (const auto& entry : result.doc_freqs) {
         terms.push_back(entry.first);
     }
     result.fuzzy = FuzzyIndex(terms);

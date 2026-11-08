@@ -56,8 +56,8 @@ std::vector<FuzzyMatch> fuzzy_candidates(const InvertedIndex& index, const std::
     std::vector<RankedMatch> ranked;
     for (FuzzyMatch& match : index.fuzzy_terms(term, max_distance)) {
         if (match.distance > 0) {
-            const std::vector<Posting>* postings = index.get_postings(match.term);
-            ranked.push_back({std::move(match), postings ? postings->size() : std::size_t{0}});
+            const std::size_t frequency = index.get_document_frequency(match.term);
+            ranked.push_back({std::move(match), frequency});
         }
     }
 
@@ -95,8 +95,8 @@ struct NearestSource {
 }
 
 bool more_common(const TermPostings& a, const TermPostings& b) {
-    if (a.postings->size() != b.postings->size()) {
-        return a.postings->size() > b.postings->size();
+    if (a.document_frequency != b.document_frequency) {
+        return a.document_frequency > b.document_frequency;
     }
     return a.term < b.term;
 }

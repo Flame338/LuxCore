@@ -85,7 +85,7 @@ The path is UTF-8 on every platform. On Windows the library converts it to a wid
 
 The file holds the primary state only. That is the stored fields of every live document, including the gaps left by removed documents so that internal ids are never reused, the key of every keyed document, and for each field the sorted term dictionary with one posting list per term. A posting holds a document id, a term frequency and the positions of the term.
 
-Everything else is rebuilt while loading. This covers the combined term map that `Searcher` uses, the fuzzy matching trie, the length of every field in every document, the document counts and averages that BM25 needs, and the per-document term lists that removal uses. A field length is the sum of the term frequencies in its postings, so the file does not repeat it and the two cannot disagree.
+Everything else is rebuilt while loading. This covers the document frequency of every term, the fuzzy matching trie, the length of every field in every document, the document counts and averages that BM25 needs, and the per-document term lists that removal uses. A field length is the sum of the term frequencies in its postings, so the file does not repeat it and the two cannot disagree.
 
 ### Format
 
@@ -115,7 +115,7 @@ Measured on an Intel Core i7-13700K, Windows 11, g++ 16.1.0 with `-O2 -DNDEBUG`,
 | Save | 66 to 69 ms | 37.3 MB file |
 | Load | 201 to 217 ms | 11.1 to 12.1 times faster than building |
 
-In one profiled run the 220 ms of a load split into about 25 ms for the stored documents, 11 ms for the keys, and 166 ms for the postings. Of the postings time, about 54 ms is parsing, 39 ms builds the per-document term entries, 33 ms fills their term lists, 15 ms builds the fuzzy trie, and the rest merges the per-field lists into the combined map. The reading of the file is the remaining 20 ms.
+In one profiled run the 220 ms of a load split into about 25 ms for the stored documents, 11 ms for the keys, and 166 ms for the postings. Of the postings time, about 54 ms is parsing, 39 ms builds the per-document term entries, 33 ms fills their term lists, 15 ms builds the fuzzy trie, and the rest counts, for each term, the documents that hold it in any field. The reading of the file is the remaining 20 ms.
 
 ## Thread safety
 
@@ -245,11 +245,11 @@ Results are collected with a bounded priority queue that keeps the best `top_k` 
 
 ### Positions
 
-The field index keeps the positions of every term occurrence next to its postings. A `PostingList` holds the sorted postings, one offset per posting, and one flat pool of positions that the offsets point into. The combined index used by `Searcher` keeps plain postings without positions. On the 100k document bench corpus the positions take 19 MB next to 38 MB of postings, and the peak working set grows from about 246 MB to 269 MB.
+The field index keeps the positions of every term occurrence next to its postings. A `PostingList` holds the sorted postings, one offset per posting, and one flat pool of positions that the offsets point into. Terms across all fields keep only a document frequency, which is all that scoring reads from them. On the 100k document bench corpus the positions take 19 MB next to 38 MB of postings, and the peak working set grows from about 246 MB to 269 MB.
 
 `Indexer` keeps positions unless `IndexOptions{.positions = false}` turns them off. Without positions each posting list holds no offsets and no position pool, so `PhraseQuery` matches nothing on such an index. The public `luxcore::Index` runs a plain text search and has no phrase query, so it always indexes without positions. A file it saves holds no positions, and `Index::load` drops the positions of a file that has them. `Indexer::deserialize(bytes, stop_words_path, options)` takes the same options. The file format is unchanged, because a posting already says whether it carries positions.
 
-On a 100,000 document corpus of 21 MB of text, the public `Index` grew the process by about 185 MB while building and by about 174 MB while loading, down from about 334 MB and 283 MB before positions were dropped and the per-document bookkeeping was slimmed. The file it saves went from 36.0 MB to 32.7 MB. These figures come from a random Zipf corpus and the Windows working set, so treat them as a ratio, not as a promise.
+On a 100,000 document corpus of 21 MB of text, the public `Index` grew the process by about 114 MB while building and by about 115 MB while loading, down from about 334 MB and 283 MB before positions were dropped and the per-document bookkeeping, the fuzzy trie, the stored text and the combined postings were slimmed. The file it saves went from 36.0 MB to 32.7 MB. These figures come from a random Zipf corpus and the Windows working set, so treat them as a ratio, not as a promise.
 
 ## Highlighting
 

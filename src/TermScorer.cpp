@@ -77,8 +77,8 @@ double TermScorer::idf(std::size_t doc_freq) const {
 }
 
 double TermScorer::term_idf(const std::string& term) const {
-    const std::vector<Posting>* postings = scope.postings(term);
-    return postings ? idf(postings->size()) : 0.0;
+    const std::size_t frequency = scope.document_frequency(term);
+    return frequency > 0 ? idf(frequency) : 0.0;
 }
 
 double TermScorer::average_length(std::string_view field) const {
@@ -107,12 +107,12 @@ double TermScorer::combine(double term_idf, double tf) const {
 
 ScoredDocs TermScorer::score_by_doc(const std::string& term) const {
     ScoredDocs summed;
-    const std::vector<Posting>* postings = scope.postings(term);
-    if (!postings) {
+    const std::size_t frequency = scope.document_frequency(term);
+    if (frequency == 0) {
         return summed;
     }
 
-    const double idf_of_term = idf(postings->size());
+    const double idf_of_term = idf(frequency);
 
     ScoredDocs merged;
     scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
