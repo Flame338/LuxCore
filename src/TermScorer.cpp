@@ -5,10 +5,12 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <span>
 
 namespace {
 
 constexpr double completion_weight = 0.5;
+constexpr std::size_t window_postings = 4096;
 
 struct PrefixRun {
     const std::vector<Posting>* postings;
@@ -166,51 +168,73 @@ ScoredDocs TermScorer::score_prefix(const std::string& term, const std::vector<s
         add_runs(completion, false);
     }
 
+    std::vector<std::span<const Posting>> pending;
     std::size_t total_postings = 0;
     for (const PrefixRun& run : runs) {
+        pending.emplace_back(*run.postings);
         total_postings += run.postings->size();
     }
 
-    std::vector<PrefixTally> tallies(total_postings);
-    std::vector<std::size_t> bounds{0};
-    for (const PrefixRun& run : runs) {
-        PrefixTally* out = tallies.data() + bounds.back();
-        for (const Posting& posting : *run.postings) {
-            const double tf = posting.term_frequency * run.boost;
-            *out++ = run.exact ? PrefixTally{posting.doc_id, tf, 0} : PrefixTally{posting.doc_id, 0, tf};
-        }
-        bounds.push_back(bounds.back() + run.postings->size());
-    }
-
-    std::vector<PrefixTally> scratch(bounds.size() > 2 ? total_postings : 0);
-    std::vector<std::size_t> next_bounds;
-    while (bounds.size() > 2) {
-        next_bounds.assign(1, 0);
-        PrefixTally* out = scratch.data();
-        for (std::size_t run = 0; run + 1 < bounds.size(); run += 2) {
-            const PrefixTally* a = tallies.data() + bounds[run];
-            const PrefixTally* a_end = tallies.data() + bounds[run + 1];
-            if (run + 2 < bounds.size()) {
-                out = merge_runs(a, a_end, a_end, tallies.data() + bounds[run + 2], out);
-            } else {
-                out = std::copy(a, a_end, out);
-            }
-            next_bounds.push_back(out - scratch.data());
-        }
-        tallies.swap(scratch);
-        bounds.swap(next_bounds);
-    }
-    tallies.resize(bounds.back());
-
-    const double prefix_idf = idf(tallies.size());
     ScoredDocs docs;
-    docs.reserve(tallies.size());
-    for (const PrefixTally& tally : tallies) {
-        if (tally.exact_tf > 0) {
-            docs.push_back({tally.doc_id, tally.exact_tf * prefix_idf});
-        } else {
-            docs.push_back({tally.doc_id, completion_weight * tally.completion_tf / (tally.completion_tf + 1.0) * prefix_idf});
+    docs.reserve(total_postings);
+    std::vector<PrefixTally> tallies;
+    std::vector<PrefixTally> scratch;
+    std::vector<std::size_t> bounds;
+    std::vector<std::size_t> next_bounds;
+    for (;;) {
+        int window_end = std::numeric_limits<int>::max();
+        for (const auto& rest : pending) {
+            if (rest.size() > window_postings) {
+                window_end = std::min(window_end, rest[window_postings].doc_id);
+            }
         }
+
+        bounds.assign(1, 0);
+        for (std::size_t run = 0; run < runs.size(); run++) {
+            const auto taken = std::ranges::lower_bound(pending[run], window_end, {}, &Posting::doc_id);
+            const std::size_t count = taken - pending[run].begin();
+            tallies.resize(bounds.back() + count);
+            PrefixTally* out = tallies.data() + bounds.back();
+            for (const Posting& posting : pending[run].first(count)) {
+                const double tf = posting.term_frequency * runs[run].boost;
+                *out++ = runs[run].exact ? PrefixTally{posting.doc_id, tf, 0} : PrefixTally{posting.doc_id, 0, tf};
+            }
+            bounds.push_back(bounds.back() + count);
+            pending[run] = pending[run].subspan(count);
+        }
+        if (bounds.back() == 0) {
+            break;
+        }
+
+        scratch.resize(tallies.size());
+        while (bounds.size() > 2) {
+            next_bounds.assign(1, 0);
+            PrefixTally* out = scratch.data();
+            for (std::size_t run = 0; run + 1 < bounds.size(); run += 2) {
+                const PrefixTally* a = tallies.data() + bounds[run];
+                const PrefixTally* a_end = tallies.data() + bounds[run + 1];
+                if (run + 2 < bounds.size()) {
+                    out = merge_runs(a, a_end, a_end, tallies.data() + bounds[run + 2], out);
+                } else {
+                    out = std::copy(a, a_end, out);
+                }
+                next_bounds.push_back(out - scratch.data());
+            }
+            tallies.swap(scratch);
+            bounds.swap(next_bounds);
+        }
+
+        for (const PrefixTally& tally : std::span(tallies).first(bounds.back())) {
+            const double score = tally.exact_tf > 0
+                ? tally.exact_tf
+                : completion_weight * tally.completion_tf / (tally.completion_tf + 1.0);
+            docs.push_back({tally.doc_id, score});
+        }
+    }
+
+    const double prefix_idf = idf(docs.size());
+    for (ScoredDoc& doc : docs) {
+        doc.score *= prefix_idf;
     }
     return docs;
 }
