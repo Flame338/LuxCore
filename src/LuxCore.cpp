@@ -99,36 +99,40 @@ void Index::save(const std::string& path) const {
     }
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
-        throw std::runtime_error("LuxCore: cannot open " + path + " for writing");
+        throw IoError("LuxCore: cannot open " + path + " for writing");
     }
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     out.close();
     if (!out) {
-        throw std::runtime_error("LuxCore: failed to write " + path);
+        throw IoError("LuxCore: failed to write " + path);
     }
 }
 
 Index Index::load(const std::string& path) {
     std::error_code error;
     if (!std::filesystem::is_regular_file(path, error)) {
-        throw std::runtime_error("LuxCore: " + path + " is not a readable file");
+        throw IoError("LuxCore: " + path + " is not a readable file");
     }
     const std::uintmax_t size = std::filesystem::file_size(path, error);
     if (error) {
-        throw std::runtime_error("LuxCore: cannot read the size of " + path);
+        throw IoError("LuxCore: cannot read the size of " + path);
     }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        throw std::runtime_error("LuxCore: cannot open " + path + " for reading");
+        throw IoError("LuxCore: cannot open " + path + " for reading");
     }
     std::string bytes(static_cast<std::size_t>(size), '\0');
     in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     if (static_cast<std::size_t>(in.gcount()) != bytes.size()) {
-        throw std::runtime_error("LuxCore: failed to read " + path);
+        throw IoError("LuxCore: failed to read " + path);
     }
 
     Index index;
-    index.impl->indexer = Indexer::deserialize(bytes);
+    try {
+        index.impl->indexer = Indexer::deserialize(bytes);
+    } catch (const std::runtime_error& error) {
+        throw FormatError(error.what());
+    }
     return index;
 }
 
