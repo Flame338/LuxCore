@@ -25,7 +25,9 @@ typedef enum lux_status {
     LUX_INVALID_ARGUMENT = 1,
     LUX_NOT_FOUND = 2,
     LUX_OUT_OF_MEMORY = 3,
-    LUX_INTERNAL_ERROR = 4
+    LUX_INTERNAL_ERROR = 4,
+    LUX_IO_ERROR = 5,
+    LUX_INVALID_FORMAT = 6
 } lux_status;
 
 typedef struct lux_index lux_index;
@@ -42,6 +44,9 @@ LUX_API lux_status lux_index_add(lux_index* index, const char* key, size_t key_l
                                  size_t title_length, const char* body, size_t body_length);
 LUX_API lux_status lux_index_remove(lux_index* index, const char* key, size_t key_length, int* removed);
 LUX_API lux_status lux_index_size(const lux_index* index, size_t* size);
+
+LUX_API lux_status lux_index_save(const lux_index* index, const char* path, size_t path_length);
+LUX_API lux_status lux_index_load(const char* path, size_t path_length, lux_index** out);
 
 LUX_API lux_status lux_index_stored(const lux_index* index, const char* key, size_t key_length, const char* field,
                                     size_t field_length, lux_text** out);

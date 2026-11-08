@@ -33,6 +33,10 @@ lux_status guarded(Body body) {
         return body();
     } catch (const std::invalid_argument&) {
         return LUX_INVALID_ARGUMENT;
+    } catch (const luxcore::IoError&) {
+        return LUX_IO_ERROR;
+    } catch (const luxcore::FormatError&) {
+        return LUX_INVALID_FORMAT;
     } catch (const std::bad_alloc&) {
         return LUX_OUT_OF_MEMORY;
     } catch (...) {
@@ -54,6 +58,10 @@ const char* lux_status_message(lux_status status) {
             return "out of memory";
         case LUX_INTERNAL_ERROR:
             return "internal error";
+        case LUX_IO_ERROR:
+            return "i/o error";
+        case LUX_INVALID_FORMAT:
+            return "not a valid LuxCore index file";
     }
     return "unknown status";
 }
@@ -100,6 +108,29 @@ lux_status lux_index_size(const lux_index* index, std::size_t* size) {
     }
     *size = index->index.size();
     return LUX_OK;
+}
+
+lux_status lux_index_save(const lux_index* index, const char* path, std::size_t path_length) {
+    if (index == nullptr || path == nullptr || path_length == 0) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        index->index.save(std::string(path, path_length));
+        return LUX_OK;
+    });
+}
+
+lux_status lux_index_load(const char* path, std::size_t path_length, lux_index** out) {
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (path == nullptr || path_length == 0 || out == nullptr) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        *out = new lux_index{luxcore::Index::load(std::string(path, path_length))};
+        return LUX_OK;
+    });
 }
 
 lux_status lux_index_stored(const lux_index* index, const char* key, std::size_t key_length, const char* field,

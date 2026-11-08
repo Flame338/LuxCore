@@ -1,6 +1,7 @@
 #include "luxcore_c.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -38,6 +39,66 @@ static lux_index* notes(void) {
                                STR("book the train to Edinburgh and pack a raincoat")),
                  LUX_OK);
     return index;
+}
+
+static void temp_path(char* buffer, size_t capacity, const char* name) {
+    const char* directory = getenv("TMPDIR");
+    if (directory == NULL || directory[0] == '\0') {
+        directory = getenv("TEMP");
+    }
+    if (directory == NULL || directory[0] == '\0') {
+        directory = getenv("TMP");
+    }
+    if (directory == NULL || directory[0] == '\0') {
+        directory = ".";
+    }
+    snprintf(buffer, capacity, "%s/%s", directory, name);
+}
+
+static void write_file(const char* path, const char* data, size_t length) {
+    FILE* file = fopen(path, "wb");
+    CHECK(file != NULL);
+    if (file != NULL) {
+        CHECK(fwrite(data, 1, length, file) == length);
+        fclose(file);
+    }
+}
+
+static size_t read_file(const char* path, char* data, size_t capacity) {
+    size_t length = 0;
+    FILE* file = fopen(path, "rb");
+    CHECK(file != NULL);
+    if (file != NULL) {
+        length = fread(data, 1, capacity, file);
+        fclose(file);
+    }
+    return length;
+}
+
+static lux_status load_from(const char* path, lux_index** out) {
+    return lux_index_load(path, strlen(path), out);
+}
+
+static int same_hits(const lux_index* a, const lux_index* b, const char* query) {
+    lux_hits* left = NULL;
+    lux_hits* right = NULL;
+    size_t i;
+    int same;
+
+    CHECK_STATUS(lux_index_search(a, query, strlen(query), 10, &left), LUX_OK);
+    CHECK_STATUS(lux_index_search(b, query, strlen(query), 10, &right), LUX_OK);
+    same = lux_hits_count(left) == lux_hits_count(right) && lux_hits_count(left) > 0;
+    for (i = 0; same && i < lux_hits_count(left); i++) {
+        size_t left_length = 0;
+        size_t right_length = 0;
+        const char* left_key = lux_hits_key(left, i, &left_length);
+        const char* right_key = lux_hits_key(right, i, &right_length);
+        same = left_length == right_length && memcmp(left_key, right_key, left_length) == 0 &&
+               lux_hits_score(left, i) == lux_hits_score(right, i);
+    }
+    lux_hits_free(left);
+    lux_hits_free(right);
+    return same;
 }
 
 static void search_finds_a_document_by_its_key(void) {
@@ -289,12 +350,159 @@ static void accessors_and_free_functions_accept_null(void) {
     lux_text_free(NULL);
 }
 
+static void a_saved_index_loads_back_with_the_same_results(void) {
+    char path[512];
+    lux_index* original = notes();
+    lux_index* loaded = NULL;
+    lux_strings* before = NULL;
+    lux_strings* after = NULL;
+    lux_text* text = NULL;
+    const char* first;
+    size_t size = 0;
+    size_t length = 0;
+
+    temp_path(path, sizeof path, "luxcore_c_round_trip.lux");
+    remove(path);
+
+    CHECK_STATUS(lux_index_save(original, path, strlen(path)), LUX_OK);
+    CHECK_STATUS(load_from(path, &loaded), LUX_OK);
+    CHECK(loaded != NULL);
+
+    CHECK_STATUS(lux_index_size(loaded, &size), LUX_OK);
+    CHECK(size == 3);
+    CHECK(same_hits(original, loaded, "raincoat"));
+    CHECK(same_hits(original, loaded, "shoping lis"));
+    CHECK(same_hits(original, loaded, "brea"));
+
+    CHECK_STATUS(lux_index_stored(loaded, STR("trip"), STR("body"), &text), LUX_OK);
+    CHECK(equals(lux_text_data(text), lux_text_length(text), "book the train to Edinburgh and pack a raincoat"));
+    lux_text_free(text);
+
+    CHECK_STATUS(lux_index_suggest(original, STR("rea"), 5, &before), LUX_OK);
+    CHECK_STATUS(lux_index_suggest(loaded, STR("rea"), 5, &after), LUX_OK);
+    CHECK(lux_strings_count(after) == lux_strings_count(before));
+    CHECK(lux_strings_count(after) == 1);
+    first = lux_strings_get(after, 0, &length);
+    CHECK(equals(first, length, "reading"));
+
+    lux_strings_free(before);
+    lux_strings_free(after);
+    lux_index_free(original);
+    lux_index_free(loaded);
+    remove(path);
+}
+
+static void a_loaded_index_can_be_changed_and_saved_again(void) {
+    char first[512];
+    char second[512];
+    lux_index* original = notes();
+    lux_index* loaded = NULL;
+    lux_index* again = NULL;
+    lux_hits* hits = NULL;
+    size_t size = 0;
+    int removed = 0;
+
+    temp_path(first, sizeof first, "luxcore_c_resave_first.lux");
+    temp_path(second, sizeof second, "luxcore_c_resave_second.lux");
+    remove(first);
+    remove(second);
+
+    CHECK_STATUS(lux_index_save(original, first, strlen(first)), LUX_OK);
+    CHECK_STATUS(load_from(first, &loaded), LUX_OK);
+    CHECK_STATUS(lux_index_add(loaded, STR("garden"), STR("Garden"), STR("tomatoes need water")), LUX_OK);
+    CHECK_STATUS(lux_index_remove(loaded, STR("shopping"), &removed), LUX_OK);
+    CHECK(removed == 1);
+    CHECK_STATUS(lux_index_save(loaded, second, strlen(second)), LUX_OK);
+    CHECK_STATUS(load_from(second, &again), LUX_OK);
+
+    CHECK_STATUS(lux_index_size(again, &size), LUX_OK);
+    CHECK(size == 3);
+    CHECK_STATUS(lux_index_search(again, STR("tomatoes"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 1);
+    CHECK(hit_is(hits, 0, "garden"));
+    lux_hits_free(hits);
+    CHECK_STATUS(lux_index_search(again, STR("bread"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 0);
+    lux_hits_free(hits);
+
+    lux_index_size(original, &size);
+    CHECK(size == 3);
+
+    lux_index_free(original);
+    lux_index_free(loaded);
+    lux_index_free(again);
+    remove(first);
+    remove(second);
+}
+
+static void load_and_save_report_io_and_format_failures(void) {
+    char missing[512];
+    char garbage[512];
+    char truncated[512];
+    char nowhere[512];
+    char bytes[4096];
+    size_t length;
+    lux_index* original = notes();
+    lux_index* loaded = original;
+
+    temp_path(missing, sizeof missing, "luxcore_c_missing.lux");
+    temp_path(garbage, sizeof garbage, "luxcore_c_garbage.lux");
+    temp_path(truncated, sizeof truncated, "luxcore_c_truncated.lux");
+    temp_path(nowhere, sizeof nowhere, "luxcore_c_no_such_directory/index.lux");
+    remove(missing);
+    remove(garbage);
+    remove(truncated);
+
+    CHECK_STATUS(load_from(missing, &loaded), LUX_IO_ERROR);
+    CHECK(loaded == NULL);
+
+    loaded = original;
+    write_file(garbage, STR("hello, this is not an index"));
+    CHECK_STATUS(load_from(garbage, &loaded), LUX_INVALID_FORMAT);
+    CHECK(loaded == NULL);
+
+    loaded = original;
+    CHECK_STATUS(lux_index_save(original, truncated, strlen(truncated)), LUX_OK);
+    length = read_file(truncated, bytes, sizeof bytes);
+    CHECK(length > 2 && length < sizeof bytes);
+    write_file(truncated, bytes, length / 2);
+    CHECK_STATUS(load_from(truncated, &loaded), LUX_INVALID_FORMAT);
+    CHECK(loaded == NULL);
+
+    CHECK_STATUS(lux_index_save(original, nowhere, strlen(nowhere)), LUX_IO_ERROR);
+
+    lux_index_free(original);
+    remove(garbage);
+    remove(truncated);
+}
+
+static void save_and_load_reject_null_and_empty_paths(void) {
+    lux_index* index = notes();
+    lux_index* loaded = index;
+
+    CHECK_STATUS(lux_index_save(NULL, STR("x.lux")), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_save(index, NULL, 0), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_save(index, NULL, 5), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_save(index, STR("")), LUX_INVALID_ARGUMENT);
+
+    CHECK_STATUS(lux_index_load(NULL, 0, &loaded), LUX_INVALID_ARGUMENT);
+    CHECK(loaded == NULL);
+    loaded = index;
+    CHECK_STATUS(lux_index_load(STR(""), &loaded), LUX_INVALID_ARGUMENT);
+    CHECK(loaded == NULL);
+    CHECK_STATUS(lux_index_load(STR("x.lux"), NULL), LUX_INVALID_ARGUMENT);
+
+    lux_index_free(index);
+}
+
 static void every_status_has_a_message(void) {
     CHECK(strcmp(lux_status_message(LUX_OK), "ok") == 0);
     CHECK(strlen(lux_status_message(LUX_INVALID_ARGUMENT)) > 0);
     CHECK(strlen(lux_status_message(LUX_NOT_FOUND)) > 0);
     CHECK(strlen(lux_status_message(LUX_OUT_OF_MEMORY)) > 0);
     CHECK(strlen(lux_status_message(LUX_INTERNAL_ERROR)) > 0);
+    CHECK(strlen(lux_status_message(LUX_IO_ERROR)) > 0);
+    CHECK(strlen(lux_status_message(LUX_INVALID_FORMAT)) > 0);
     CHECK(strlen(lux_status_message((lux_status)99)) > 0);
 }
 
@@ -318,6 +526,10 @@ int main(void) {
         {"an_empty_key_is_an_invalid_argument", an_empty_key_is_an_invalid_argument},
         {"null_arguments_are_invalid", null_arguments_are_invalid},
         {"accessors_and_free_functions_accept_null", accessors_and_free_functions_accept_null},
+        {"a_saved_index_loads_back_with_the_same_results", a_saved_index_loads_back_with_the_same_results},
+        {"a_loaded_index_can_be_changed_and_saved_again", a_loaded_index_can_be_changed_and_saved_again},
+        {"load_and_save_report_io_and_format_failures", load_and_save_report_io_and_format_failures},
+        {"save_and_load_reject_null_and_empty_paths", save_and_load_reject_null_and_empty_paths},
         {"every_status_has_a_message", every_status_has_a_message},
     };
     const size_t count = sizeof(tests) / sizeof(tests[0]);
