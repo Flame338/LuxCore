@@ -27,7 +27,8 @@ typedef enum lux_status {
     LUX_OUT_OF_MEMORY = 3,
     LUX_INTERNAL_ERROR = 4,
     LUX_IO_ERROR = 5,
-    LUX_INVALID_FORMAT = 6
+    LUX_INVALID_FORMAT = 6,
+    LUX_INVALID_QUERY = 7
 } lux_status;
 
 typedef struct lux_index lux_index;
@@ -35,9 +36,24 @@ typedef struct lux_hits lux_hits;
 typedef struct lux_strings lux_strings;
 typedef struct lux_text lux_text;
 
+typedef struct lux_config {
+    int positions;
+} lux_config;
+
+typedef struct lux_snippet_options {
+    size_t length;
+    const char* start_marker;
+    size_t start_marker_length;
+    const char* end_marker;
+    size_t end_marker_length;
+    const char* ellipsis;
+    size_t ellipsis_length;
+} lux_snippet_options;
+
 LUX_API const char* lux_status_message(lux_status status);
 
 LUX_API lux_status lux_index_create(lux_index** out);
+LUX_API lux_status lux_index_create_with(const lux_config* config, lux_index** out);
 LUX_API void lux_index_free(lux_index* index);
 
 LUX_API lux_status lux_index_add(lux_index* index, const char* key, size_t key_length, const char* title,
@@ -47,11 +63,21 @@ LUX_API lux_status lux_index_size(const lux_index* index, size_t* size);
 
 LUX_API lux_status lux_index_save(const lux_index* index, const char* path, size_t path_length);
 LUX_API lux_status lux_index_load(const char* path, size_t path_length, lux_index** out);
+LUX_API lux_status lux_index_load_with(const char* path, size_t path_length, const lux_config* config,
+                                       lux_index** out);
 
 LUX_API lux_status lux_index_stored(const lux_index* index, const char* key, size_t key_length, const char* field,
                                     size_t field_length, lux_text** out);
 LUX_API lux_status lux_index_search(const lux_index* index, const char* query, size_t query_length, size_t limit,
                                     lux_hits** out);
+LUX_API lux_status lux_index_search_query(const lux_index* index, const char* query, size_t query_length,
+                                          size_t limit, lux_hits** out);
+LUX_API lux_status lux_index_snippet(const lux_index* index, const char* key, size_t key_length, const char* field,
+                                     size_t field_length, const char* query, size_t query_length,
+                                     const lux_snippet_options* options, lux_text** out);
+LUX_API lux_status lux_index_snippet_query(const lux_index* index, const char* key, size_t key_length,
+                                           const char* field, size_t field_length, const char* query,
+                                           size_t query_length, const lux_snippet_options* options, lux_text** out);
 LUX_API lux_status lux_index_suggest(const lux_index* index, const char* query, size_t query_length, size_t limit,
                                      lux_strings** out);
 

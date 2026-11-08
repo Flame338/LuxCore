@@ -495,6 +495,317 @@ static void save_and_load_reject_null_and_empty_paths(void) {
     lux_index_free(index);
 }
 
+static int text_is(const lux_text* text, const char* expected) {
+    return equals(lux_text_data(text), lux_text_length(text), expected);
+}
+
+static lux_index* phrase_notes(int positions) {
+    lux_index* index = NULL;
+    lux_config config;
+    config.positions = positions;
+    CHECK_STATUS(lux_index_create_with(&config, &index), LUX_OK);
+    CHECK_STATUS(lux_index_add(index, STR("fox"), STR("Animals"), STR("the quick brown fox jumps over the lazy dog")),
+                 LUX_OK);
+    CHECK_STATUS(lux_index_add(index, STR("dog"), STR("Pets"), STR("a lazy brown dog sleeps")), LUX_OK);
+    return index;
+}
+
+static void search_query_understands_fields_and_boolean_operators(void) {
+    lux_index* index = notes();
+    lux_hits* hits = NULL;
+
+    CHECK_STATUS(lux_index_search_query(index, STR("title:list"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 2);
+    lux_hits_free(hits);
+
+    CHECK_STATUS(lux_index_search_query(index, STR("title:book"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 0);
+    lux_hits_free(hits);
+
+    CHECK_STATUS(lux_index_search_query(index, STR("+book -train"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 1);
+    CHECK(hit_is(hits, 0, "reading"));
+    CHECK(lux_hits_score(hits, 0) > 0.0);
+    lux_hits_free(hits);
+
+    CHECK_STATUS(lux_index_search_query(index, STR("milk OR raincoat"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 2);
+    lux_hits_free(hits);
+
+    CHECK_STATUS(lux_index_search_query(index, STR("book"), 1, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 1);
+    lux_hits_free(hits);
+
+    CHECK_STATUS(lux_index_search_query(index, STR("  "), 10, &hits), LUX_OK);
+    CHECK(hits != NULL);
+    CHECK(lux_hits_count(hits) == 0);
+    lux_hits_free(hits);
+
+    lux_index_free(index);
+}
+
+static void search_query_reports_a_parse_failure_as_invalid_query(void) {
+    lux_index* index = notes();
+    lux_hits* hits = (lux_hits*)index;
+    lux_status status = lux_index_search_query(index, STR("book (train"), 10, &hits);
+
+    CHECK(status == LUX_INVALID_QUERY);
+    CHECK(status == 7);
+    CHECK(hits == NULL);
+    CHECK(strcmp(lux_status_message(status), "invalid query") == 0);
+
+    CHECK_STATUS(lux_index_search_query(index, STR("\"unterminated"), 10, &hits), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(index, STR("title:"), 10, &hits), LUX_INVALID_QUERY);
+
+    lux_index_free(index);
+}
+
+static void phrase_queries_need_positions(void) {
+    lux_index* plain = phrase_notes(0);
+    lux_index* positional = phrase_notes(1);
+    lux_hits* hits = NULL;
+
+    CHECK_STATUS(lux_index_search_query(plain, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
+    CHECK(hits == NULL);
+    CHECK_STATUS(lux_index_search_query(plain, STR("wi-fi"), 10, &hits), LUX_INVALID_QUERY);
+
+    CHECK_STATUS(lux_index_search_query(positional, STR("\"quick brown\""), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 1);
+    CHECK(hit_is(hits, 0, "fox"));
+    lux_hits_free(hits);
+
+    CHECK_STATUS(lux_index_search_query(positional, STR("\"brown quick\""), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 0);
+    lux_hits_free(hits);
+
+    lux_index_free(plain);
+    lux_index_free(positional);
+}
+
+static void create_with_a_null_config_uses_the_defaults(void) {
+    lux_index* index = NULL;
+    lux_hits* hits = NULL;
+
+    CHECK_STATUS(lux_index_create_with(NULL, &index), LUX_OK);
+    CHECK(index != NULL);
+    CHECK_STATUS(lux_index_add(index, STR("fox"), STR("Animals"), STR("the quick brown fox")), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(index, STR("quick"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 1);
+
+    lux_hits_free(hits);
+    lux_index_free(index);
+}
+
+static void positions_survive_save_and_load_with_a_config(void) {
+    char path[512];
+    lux_index* original = phrase_notes(1);
+    lux_index* with_positions = NULL;
+    lux_index* without_positions = NULL;
+    lux_index* defaulted = NULL;
+    lux_config config;
+    lux_hits* hits = NULL;
+
+    temp_path(path, sizeof path, "luxcore_c_positions.lux");
+    remove(path);
+    CHECK_STATUS(lux_index_save(original, path, strlen(path)), LUX_OK);
+
+    config.positions = 1;
+    CHECK_STATUS(lux_index_load_with(path, strlen(path), &config, &with_positions), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(with_positions, STR("\"quick brown\""), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 1);
+    lux_hits_free(hits);
+
+    config.positions = 0;
+    CHECK_STATUS(lux_index_load_with(path, strlen(path), &config, &without_positions), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(without_positions, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
+
+    CHECK_STATUS(lux_index_load_with(path, strlen(path), NULL, &defaulted), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(defaulted, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
+
+    lux_index_free(original);
+    lux_index_free(with_positions);
+    lux_index_free(without_positions);
+    lux_index_free(defaulted);
+    remove(path);
+}
+
+static void snippet_marks_what_search_matched(void) {
+    lux_index* index = notes();
+    lux_text* text = (lux_text*)index;
+
+    CHECK_STATUS(lux_index_snippet(index, STR("reading"), STR("body"), STR("lucne ranks"), NULL, &text), LUX_OK);
+    CHECK(text_is(text, "a book about how <em>Lucene</em> <em>ranks</em> search results"));
+    lux_text_free(text);
+
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucne"), NULL, &text), LUX_OK);
+    CHECK(text_is(text, "a book about how Lucene ranks search results"));
+    lux_text_free(text);
+
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("+book OR ranks"), NULL, &text),
+                 LUX_OK);
+    CHECK(text_is(text, "a <em>book</em> about how Lucene <em>ranks</em> search results"));
+    lux_text_free(text);
+
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("title:book"), NULL, &text), LUX_OK);
+    CHECK(text_is(text, "a book about how Lucene ranks search results"));
+    lux_text_free(text);
+
+    lux_index_free(index);
+}
+
+static void snippet_options_override_markers_and_length(void) {
+    lux_index* index = notes();
+    lux_text* text = NULL;
+    lux_snippet_options options;
+
+    memset(&options, 0, sizeof options);
+    options.length = 160;
+    options.start_marker = "[";
+    options.start_marker_length = 1;
+    options.end_marker = "]";
+    options.end_marker_length = 1;
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK(text_is(text, "a book about how [Lucene] ranks search results"));
+    lux_text_free(text);
+
+    options.start_marker = "<<partial>>";
+    options.start_marker_length = 2;
+    options.end_marker = NULL;
+    options.end_marker_length = 0;
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK(text_is(text, "a book about how <<Lucene</em> ranks search results"));
+    lux_text_free(text);
+
+    options.start_marker = "";
+    options.start_marker_length = 0;
+    options.end_marker = "";
+    options.end_marker_length = 0;
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK(text_is(text, "a book about how Lucene ranks search results"));
+    lux_text_free(text);
+
+    memset(&options, 0, sizeof options);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK(text_is(text, "a book about how <em>Lucene</em> ranks search results"));
+    lux_text_free(text);
+
+    lux_index_free(index);
+}
+
+static void snippet_options_set_the_ellipsis_and_the_length(void) {
+    lux_index* index = NULL;
+    lux_text* text = NULL;
+    lux_snippet_options options;
+    char body[2048];
+    size_t used = 0;
+    int i;
+
+    for (i = 0; i < 30; i++) {
+        used += (size_t)snprintf(body + used, sizeof body - used, "filler words fill space ");
+    }
+    used += (size_t)snprintf(body + used, sizeof body - used, "needle appears here ");
+    for (i = 0; i < 30; i++) {
+        used += (size_t)snprintf(body + used, sizeof body - used, "filler words fill space ");
+    }
+
+    CHECK_STATUS(lux_index_create(&index), LUX_OK);
+    CHECK_STATUS(lux_index_add(index, STR("long"), STR("Long"), body, used), LUX_OK);
+
+    memset(&options, 0, sizeof options);
+    options.length = 60;
+    options.ellipsis = "~";
+    options.ellipsis_length = 1;
+    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text), LUX_OK);
+    CHECK(lux_text_length(text) < 160);
+    CHECK(lux_text_data(text)[0] == '~');
+    CHECK(strstr(lux_text_data(text), "<em>needle</em>") != NULL);
+    CHECK(strstr(lux_text_data(text), "...") == NULL);
+    lux_text_free(text);
+
+    options.ellipsis = "";
+    options.ellipsis_length = 0;
+    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text), LUX_OK);
+    CHECK(strstr(lux_text_data(text), "<em>needle</em>") != NULL);
+    CHECK(lux_text_data(text)[0] != '~');
+    CHECK(lux_text_data(text)[0] != '.');
+    lux_text_free(text);
+
+    options.ellipsis = NULL;
+    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text), LUX_OK);
+    CHECK(strncmp(lux_text_data(text), "...", 3) == 0);
+    lux_text_free(text);
+
+    lux_index_free(index);
+}
+
+static void snippet_reports_unknown_keys_and_fields_as_not_found(void) {
+    lux_index* index = notes();
+    lux_text* text = (lux_text*)index;
+
+    CHECK_STATUS(lux_index_snippet(index, STR("missing"), STR("body"), STR("book"), NULL, &text), LUX_NOT_FOUND);
+    CHECK(text == NULL);
+    CHECK_STATUS(lux_index_snippet(index, STR("reading"), STR("author"), STR("book"), NULL, &text), LUX_NOT_FOUND);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("missing"), STR("body"), STR("book"), NULL, &text), LUX_NOT_FOUND);
+    CHECK(text == NULL);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("author"), STR("book"), NULL, &text), LUX_NOT_FOUND);
+
+    lux_index_free(index);
+}
+
+static void snippet_query_reports_a_bad_query_as_invalid_query(void) {
+    lux_index* plain = phrase_notes(0);
+    lux_text* text = (lux_text*)plain;
+
+    CHECK_STATUS(lux_index_snippet_query(plain, STR("fox"), STR("body"), STR("(quick"), NULL, &text), LUX_INVALID_QUERY);
+    CHECK(text == NULL);
+    CHECK_STATUS(lux_index_snippet_query(plain, STR("fox"), STR("body"), STR("\"quick brown\""), NULL, &text),
+                 LUX_INVALID_QUERY);
+
+    lux_index_free(plain);
+}
+
+static void new_functions_reject_null_arguments(void) {
+    lux_index* index = notes();
+    lux_hits* hits = (lux_hits*)index;
+    lux_text* text = (lux_text*)index;
+    lux_index* created = (lux_index*)index;
+    lux_config config;
+
+    config.positions = 1;
+    CHECK_STATUS(lux_index_create_with(&config, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_create_with(&config, &created), LUX_OK);
+    lux_index_free(created);
+    created = (lux_index*)index;
+    CHECK_STATUS(lux_index_load_with(NULL, 1, &config, &created), LUX_INVALID_ARGUMENT);
+    CHECK(created == NULL);
+    CHECK_STATUS(lux_index_load_with("x", 0, &config, &created), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_load_with("x", 1, &config, NULL), LUX_INVALID_ARGUMENT);
+
+    CHECK_STATUS(lux_index_search_query(NULL, STR("q"), 10, &hits), LUX_INVALID_ARGUMENT);
+    CHECK(hits == NULL);
+    hits = (lux_hits*)index;
+    CHECK_STATUS(lux_index_search_query(index, NULL, 1, 10, &hits), LUX_INVALID_ARGUMENT);
+    CHECK(hits == NULL);
+    CHECK_STATUS(lux_index_search_query(index, STR("q"), 10, NULL), LUX_INVALID_ARGUMENT);
+
+    CHECK_STATUS(lux_index_snippet(NULL, STR("k"), STR("body"), STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK(text == NULL);
+    text = (lux_text*)index;
+    CHECK_STATUS(lux_index_snippet(index, NULL, 1, STR("body"), STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet(index, STR("k"), NULL, 1, STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet(index, STR("k"), STR("body"), NULL, 1, NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet(index, STR("k"), STR("body"), STR("q"), NULL, NULL), LUX_INVALID_ARGUMENT);
+
+    CHECK_STATUS(lux_index_snippet_query(NULL, STR("k"), STR("body"), STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, NULL, 1, STR("body"), STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), NULL, 1, STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), STR("body"), NULL, 1, NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), STR("body"), STR("q"), NULL, NULL), LUX_INVALID_ARGUMENT);
+
+    lux_index_free(index);
+}
+
 static void every_status_has_a_message(void) {
     CHECK(strcmp(lux_status_message(LUX_OK), "ok") == 0);
     CHECK(strlen(lux_status_message(LUX_INVALID_ARGUMENT)) > 0);
@@ -503,6 +814,7 @@ static void every_status_has_a_message(void) {
     CHECK(strlen(lux_status_message(LUX_INTERNAL_ERROR)) > 0);
     CHECK(strlen(lux_status_message(LUX_IO_ERROR)) > 0);
     CHECK(strlen(lux_status_message(LUX_INVALID_FORMAT)) > 0);
+    CHECK(strlen(lux_status_message(LUX_INVALID_QUERY)) > 0);
     CHECK(strlen(lux_status_message((lux_status)99)) > 0);
 }
 
@@ -530,6 +842,17 @@ int main(void) {
         {"a_loaded_index_can_be_changed_and_saved_again", a_loaded_index_can_be_changed_and_saved_again},
         {"load_and_save_report_io_and_format_failures", load_and_save_report_io_and_format_failures},
         {"save_and_load_reject_null_and_empty_paths", save_and_load_reject_null_and_empty_paths},
+        {"search_query_understands_fields_and_boolean_operators", search_query_understands_fields_and_boolean_operators},
+        {"search_query_reports_a_parse_failure_as_invalid_query", search_query_reports_a_parse_failure_as_invalid_query},
+        {"phrase_queries_need_positions", phrase_queries_need_positions},
+        {"create_with_a_null_config_uses_the_defaults", create_with_a_null_config_uses_the_defaults},
+        {"positions_survive_save_and_load_with_a_config", positions_survive_save_and_load_with_a_config},
+        {"snippet_marks_what_search_matched", snippet_marks_what_search_matched},
+        {"snippet_options_override_markers_and_length", snippet_options_override_markers_and_length},
+        {"snippet_options_set_the_ellipsis_and_the_length", snippet_options_set_the_ellipsis_and_the_length},
+        {"snippet_reports_unknown_keys_and_fields_as_not_found", snippet_reports_unknown_keys_and_fields_as_not_found},
+        {"snippet_query_reports_a_bad_query_as_invalid_query", snippet_query_reports_a_bad_query_as_invalid_query},
+        {"new_functions_reject_null_arguments", new_functions_reject_null_arguments},
         {"every_status_has_a_message", every_status_has_a_message},
     };
     const size_t count = sizeof(tests) / sizeof(tests[0]);
