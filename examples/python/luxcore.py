@@ -9,6 +9,23 @@ OK = 0
 NOT_FOUND = 2
 IO_ERROR = 5
 INVALID_FORMAT = 6
+INVALID_QUERY = 7
+
+
+class _Config(ctypes.Structure):
+    _fields_ = [("positions", ctypes.c_int)]
+
+
+class _SnippetOptions(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_size_t),
+        ("start_marker", ctypes.c_char_p),
+        ("start_marker_length", ctypes.c_size_t),
+        ("end_marker", ctypes.c_char_p),
+        ("end_marker_length", ctypes.c_size_t),
+        ("ellipsis", ctypes.c_char_p),
+        ("ellipsis_length", ctypes.c_size_t),
+    ]
 
 
 class LuxError(Exception):
@@ -32,14 +49,21 @@ def load(path=None):
     signatures = {
         "lux_status_message": (text, [ctypes.c_int]),
         "lux_index_create": (ctypes.c_int, [out]),
+        "lux_index_create_with": (ctypes.c_int, [ctypes.POINTER(_Config), out]),
         "lux_index_free": (None, [handle]),
         "lux_index_add": (ctypes.c_int, [handle, text, size, text, size, text, size]),
         "lux_index_remove": (ctypes.c_int, [handle, text, size, ctypes.POINTER(ctypes.c_int)]),
         "lux_index_size": (ctypes.c_int, [handle, ctypes.POINTER(size)]),
         "lux_index_save": (ctypes.c_int, [handle, text, size]),
         "lux_index_load": (ctypes.c_int, [text, size, out]),
+        "lux_index_load_with": (ctypes.c_int, [text, size, ctypes.POINTER(_Config), out]),
         "lux_index_stored": (ctypes.c_int, [handle, text, size, text, size, out]),
         "lux_index_search": (ctypes.c_int, [handle, text, size, size, out]),
+        "lux_index_search_query": (ctypes.c_int, [handle, text, size, size, out]),
+        "lux_index_snippet": (
+            ctypes.c_int, [handle, text, size, text, size, text, size, ctypes.POINTER(_SnippetOptions), out]),
+        "lux_index_snippet_query": (
+            ctypes.c_int, [handle, text, size, text, size, text, size, ctypes.POINTER(_SnippetOptions), out]),
         "lux_index_suggest": (ctypes.c_int, [handle, text, size, size, out]),
         "lux_hits_count": (size, [handle]),
         "lux_hits_key": (ctypes.c_void_p, [handle, size, ctypes.POINTER(size)]),
@@ -65,19 +89,21 @@ def utf8(value):
 
 
 class Index:
-    def __init__(self, library=None, *, _handle=None):
+    def __init__(self, library=None, *, positions=False, _handle=None):
         self._handle = None
         self._lib = load(library)
         if _handle is None:
             _handle = ctypes.c_void_p()
-            self._check(self._lib.lux_index_create(ctypes.byref(_handle)))
+            config = _Config(int(bool(positions)))
+            self._check(self._lib.lux_index_create_with(ctypes.byref(config), ctypes.byref(_handle)))
         self._handle = _handle
 
     @classmethod
-    def open(cls, path, library=None):
+    def open(cls, path, library=None, *, positions=False):
         lib = load(library)
         handle = ctypes.c_void_p()
-        status = lib.lux_index_load(*utf8(os.fspath(path)), ctypes.byref(handle))
+        config = _Config(int(bool(positions)))
+        status = lib.lux_index_load_with(*utf8(os.fspath(path)), ctypes.byref(config), ctypes.byref(handle))
         if status != OK:
             raise LuxError(status, lib.lux_status_message(status).decode("ascii"))
         return cls(library, _handle=handle)
@@ -125,8 +151,43 @@ class Index:
             self._lib.lux_text_free(result)
 
     def search(self, query, limit=10):
+        return self._hits(self._lib.lux_index_search, query, limit)
+
+    def search_query(self, query, limit=10):
+        return self._hits(self._lib.lux_index_search_query, query, limit)
+
+    def snippet(self, key, field, query, **options):
+        return self._snippet(self._lib.lux_index_snippet, key, field, query, options)
+
+    def snippet_query(self, key, field, query, **options):
+        return self._snippet(self._lib.lux_index_snippet_query, key, field, query, options)
+
+    def _snippet(self, function, key, field, query, options):
+        unknown = set(options) - {"length", "start_marker", "end_marker", "ellipsis"}
+        if unknown:
+            raise TypeError(f"unexpected snippet option {sorted(unknown)[0]!r}")
+        settings = _SnippetOptions(options.get("length") or 0)
+        for name in ("start_marker", "end_marker", "ellipsis"):
+            value = options.get(name)
+            if value is not None:
+                data, length = utf8(value)
+                setattr(settings, name, data)
+                setattr(settings, name + "_length", length)
         result = ctypes.c_void_p()
-        self._check(self._lib.lux_index_search(self._handle, *utf8(query), limit, ctypes.byref(result)))
+        status = function(self._handle, *utf8(key), *utf8(field), *utf8(query), ctypes.byref(settings),
+                          ctypes.byref(result))
+        if status == NOT_FOUND:
+            return None
+        self._check(status)
+        try:
+            data = self._lib.lux_text_data(result)
+            return ctypes.string_at(data, self._lib.lux_text_length(result)).decode("utf-8")
+        finally:
+            self._lib.lux_text_free(result)
+
+    def _hits(self, function, query, limit):
+        result = ctypes.c_void_p()
+        self._check(function(self._handle, *utf8(query), limit, ctypes.byref(result)))
         try:
             hits = []
             length = ctypes.c_size_t()
@@ -175,6 +236,26 @@ if __name__ == "__main__":
             print(f"  {key}  {index.stored(key, 'title')}  {score:.3f}")
 
         print("Suggestions for \"rea\":", index.suggest("rea"))
+
+        print("Query syntax \"+book -train\":", [key for key, _ in index.search_query("+book -train")])
+        print("Query syntax \"title:list\":", [key for key, _ in index.search_query("title:list")])
+        print("Snippet for \"lucne ranks\":", index.snippet("note-2", "body", "lucne ranks"))
+        marked = index.snippet_query("note-2", "title", "title:list", start_marker="[", end_marker="]")
+        print("Snippet for \"title:list\":", marked)
+        print("Snippet for a missing note:", index.snippet("missing", "body", "book"))
+        try:
+            index.search_query("book (train")
+        except LuxError as error:
+            print(f"Bad query rejected with status {error.status}: {error}")
+
+        with Index(args.lib, positions=True) as phrases:
+            phrases.add("fox", "Animals", "the quick brown fox jumps over the lazy dog")
+            print("Phrase \"quick brown\":", [key for key, _ in phrases.search_query('"quick brown"')])
+            print("Phrase snippet:", phrases.snippet_query("fox", "body", '"quick brown"'))
+        try:
+            index.search_query('"quick brown"')
+        except LuxError as error:
+            print(f"Phrase without positions rejected with status {error.status}: {error}")
 
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "notes.lux")
