@@ -6,3 +6,4 @@ build/
 
 # failcap: captured tool-call failures (may contain sensitive output)
 .claude/failcap/
+__pycache__/
