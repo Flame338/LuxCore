@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 struct FieldOptions {
@@ -29,7 +30,8 @@ private:
 public:
     Document& add(Field field);
     const Field* find(std::string_view name) const;
-    const std::vector<Field>& get_fields() const { return fields; }
+    const std::vector<Field>& get_fields() const& { return fields; }
+    std::vector<Field> get_fields() && { return std::move(fields); }
 };
 
 Document make_text_document(const std::string& title, const std::string& body);
