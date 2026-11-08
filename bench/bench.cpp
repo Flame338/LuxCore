@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <random>
 #include <string>
 #include <thread>
@@ -32,6 +33,8 @@ struct Options {
     int removes = 1000;
     int fuzzy = 0;
     int indexing = 0;
+    int scaling = 0;
+    int slowest = 0;
     int writer_pause_us = 200;
     std::uint64_t seed = 12345;
 };
@@ -340,35 +343,47 @@ void print_latency(const char* label, const std::vector<double>& totals) {
               << " max_us=" << percentile(totals, 1.0) << "\n";
 }
 
-bool measure_indexing(const Options& options, const std::vector<std::string>& words,
-                      std::discrete_distribution<int> zipf, std::mt19937_64 corpus_rng,
-                      const std::vector<Keystroke>& keystrokes) {
-    luxcore::Index index;
+double build_public_index(luxcore::Index& index, const Options& options, const std::vector<std::string>& words,
+                          std::discrete_distribution<int>& zipf, std::mt19937_64 corpus_rng) {
     const Clock::time_point build_start = Clock::now();
     generate_corpus(words, zipf, corpus_rng, options.docs,
                     [&](const std::string& key, const std::string& title, const std::string& body) {
                         index.add(key, title, body);
                     });
-    const double build_ms = microseconds(build_start, Clock::now()) / 1000.0;
+    return microseconds(build_start, Clock::now()) / 1000.0;
+}
 
+std::vector<DocumentText> make_writer_pool(const Options& options, const std::vector<std::string>& words,
+                                           std::discrete_distribution<int>& zipf) {
     std::mt19937_64 writer_rng(options.seed + 1);
     std::vector<DocumentText> pool;
     for (int i = 0; i < 2000; i++) {
         pool.push_back({sentence(words, zipf, writer_rng, 2 + static_cast<int>(writer_rng() % 3)),
                         sentence(words, zipf, writer_rng, 20 + static_cast<int>(writer_rng() % 21))});
     }
+    return pool;
+}
 
-    std::size_t sink = 0;
-    timed_index_passes(index, keystrokes, 1, sink);
-    const std::size_t docs_before = index.size();
-    const std::vector<double> idle = timed_index_passes(index, keystrokes, options.passes, sink);
+class BackgroundWriter {
+public:
+    BackgroundWriter(luxcore::Index& index, const std::vector<DocumentText>& pool, int pause_us)
+        : thread([this, &index, &pool, pause_us] { run(index, pool, pause_us); }) {
+        while (added.load() == 0 && errors.load() == 0) {
+            std::this_thread::yield();
+        }
+    }
 
-    std::atomic<bool> stop{false};
+    void finish() {
+        stop.store(true);
+        thread.join();
+    }
+
     std::atomic<std::size_t> added{0};
     std::atomic<std::size_t> removed{0};
-    std::atomic<int> writer_errors{0};
-    const Clock::time_point writing_start = Clock::now();
-    std::thread writer([&] {
+    std::atomic<int> errors{0};
+
+private:
+    void run(luxcore::Index& index, const std::vector<DocumentText>& pool, int pause_us) {
         try {
             std::size_t next = 0;
             std::size_t oldest = 0;
@@ -383,22 +398,185 @@ bool measure_indexing(const Options& options, const std::vector<std::string>& wo
                     }
                     oldest++;
                 }
-                for (const Clock::time_point until = Clock::now() + std::chrono::microseconds(options.writer_pause_us);
+                for (const Clock::time_point until = Clock::now() + std::chrono::microseconds(pause_us);
                      Clock::now() < until;) {
                     std::this_thread::yield();
                 }
             }
         } catch (...) {
-            writer_errors.fetch_add(1);
+            errors.fetch_add(1);
         }
-    });
-    while (added.load() == 0 && writer_errors.load() == 0) {
+    }
+
+    std::atomic<bool> stop{false};
+    std::thread thread;
+};
+
+struct ScalingRow {
+    int readers = 0;
+    std::size_t operations = 0;
+    double seconds = 0.0;
+    double p50_us = 0.0;
+    double p99_us = 0.0;
+    std::size_t writer_adds = 0;
+    std::size_t errors = 0;
+};
+
+ScalingRow measure_readers(luxcore::Index& index, const std::vector<Keystroke>& keystrokes,
+                           const std::vector<DocumentText>& pool, const Options& options, int readers,
+                           bool with_writer) {
+    std::vector<std::vector<double>> latencies(static_cast<std::size_t>(readers));
+    std::vector<std::size_t> sinks(static_cast<std::size_t>(readers), 0);
+    std::vector<std::size_t> bad(static_cast<std::size_t>(readers), 0);
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+
+    std::optional<BackgroundWriter> writer;
+    if (with_writer) {
+        writer.emplace(index, pool, options.writer_pause_us);
+    }
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < readers; t++) {
+        threads.emplace_back([&, t] {
+            std::vector<double>& mine = latencies[static_cast<std::size_t>(t)];
+            mine.reserve(keystrokes.size() * static_cast<std::size_t>(options.passes));
+            ready.fetch_add(1);
+            while (!go.load()) {
+                std::this_thread::yield();
+            }
+            const std::size_t offset = keystrokes.size() * static_cast<std::size_t>(t) /
+                                       static_cast<std::size_t>(readers);
+            for (int pass = 0; pass < options.passes; pass++) {
+                for (std::size_t i = 0; i < keystrokes.size(); i++) {
+                    const Keystroke& keystroke = keystrokes[(i + offset) % keystrokes.size()];
+                    const Clock::time_point start = Clock::now();
+                    const std::vector<luxcore::Hit> hits = index.search(keystroke.text, result_limit);
+                    const std::vector<std::string> suggestions = index.suggest(keystroke.text, suggestion_limit);
+                    mine.push_back(microseconds(start, Clock::now()));
+                    sinks[static_cast<std::size_t>(t)] += hits.size() + suggestions.size();
+                    if (hits.size() > static_cast<std::size_t>(result_limit) ||
+                        suggestions.size() > suggestion_limit) {
+                        bad[static_cast<std::size_t>(t)]++;
+                    }
+                }
+            }
+        });
+    }
+    while (ready.load() < readers) {
         std::this_thread::yield();
     }
+    const Clock::time_point begin = Clock::now();
+    go.store(true);
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    const double seconds = microseconds(begin, Clock::now()) / 1e6;
+
+    ScalingRow row;
+    row.readers = readers;
+    row.seconds = seconds;
+    std::vector<double> pooled;
+    for (int t = 0; t < readers; t++) {
+        const auto index_of = static_cast<std::size_t>(t);
+        pooled.insert(pooled.end(), latencies[index_of].begin(), latencies[index_of].end());
+        row.errors += bad[index_of];
+    }
+    row.operations = pooled.size();
+    row.p50_us = percentile(pooled, 0.50);
+    row.p99_us = percentile(pooled, 0.99);
+    if (writer) {
+        writer->finish();
+        row.writer_adds = writer->added.load();
+        row.errors += static_cast<std::size_t>(writer->errors.load());
+    }
+    return row;
+}
+
+bool measure_scaling(const Options& options, const std::vector<std::string>& words,
+                     std::discrete_distribution<int> zipf, std::mt19937_64 corpus_rng,
+                     const std::vector<Keystroke>& keystrokes) {
+    luxcore::Index index;
+    const double build_ms = build_public_index(index, options, words, zipf, corpus_rng);
+    const std::vector<DocumentText> pool = make_writer_pool(options, words, zipf);
+
+    std::cout << "scaling luxcore::Index docs=" << options.docs << " build_ms=" << build_ms
+              << " keystrokes=" << keystrokes.size() << " passes=" << options.passes
+              << " writer_pause_us=" << options.writer_pause_us << "\n";
+    bool clean = true;
+    for (const bool with_writer : {false, true}) {
+        double single = 0.0;
+        for (const int readers : {1, 2, 4, 8, 16}) {
+            const ScalingRow row = measure_readers(index, keystrokes, pool, options, readers, with_writer);
+            const double per_second = static_cast<double>(row.operations) / row.seconds;
+            if (readers == 1) single = per_second;
+            clean = clean && row.errors == 0;
+            std::cout << "scaling " << (with_writer ? "with_writer " : "readers_only") << " readers=" << std::setw(2)
+                      << row.readers << " ops=" << row.operations << " keystrokes_per_s=" << per_second
+                      << " speedup=" << per_second / single << " p50_us=" << row.p50_us
+                      << " p99_us=" << row.p99_us << " writer_adds=" << row.writer_adds
+                      << " errors=" << row.errors << "\n";
+        }
+    }
+    return clean;
+}
+
+void report_slowest(const luxcore::Index& index, const std::vector<Keystroke>& keystrokes, int count,
+                    std::size_t& sink) {
+    struct Cost {
+        std::string text;
+        double search_us;
+        double suggest_us;
+    };
+    std::vector<Cost> costs;
+    for (const Keystroke& keystroke : keystrokes) {
+        double search_best = 1e18;
+        double suggest_best = 1e18;
+        for (int repeat = 0; repeat < 5; repeat++) {
+            const Clock::time_point start = Clock::now();
+            const std::vector<luxcore::Hit> hits = index.search(keystroke.text, result_limit);
+            const Clock::time_point middle = Clock::now();
+            const std::vector<std::string> suggestions = index.suggest(keystroke.text, suggestion_limit);
+            const Clock::time_point end = Clock::now();
+            sink += hits.size() + suggestions.size();
+            search_best = std::min(search_best, microseconds(start, middle));
+            suggest_best = std::min(suggest_best, microseconds(middle, end));
+        }
+        costs.push_back({keystroke.text, search_best, suggest_best});
+    }
+    std::sort(costs.begin(), costs.end(), [](const Cost& a, const Cost& b) {
+        return a.search_us + a.suggest_us > b.search_us + b.suggest_us;
+    });
+    const std::size_t shown = std::min<std::size_t>(static_cast<std::size_t>(count), costs.size());
+    for (std::size_t i = 0; i < shown; i++) {
+        std::cout << "slowest \"" << costs[i].text << "\" search_us=" << costs[i].search_us
+                  << " suggest_us=" << costs[i].suggest_us << "\n";
+    }
+}
+
+bool measure_indexing(const Options& options, const std::vector<std::string>& words,
+                      std::discrete_distribution<int> zipf, std::mt19937_64 corpus_rng,
+                      const std::vector<Keystroke>& keystrokes) {
+    luxcore::Index index;
+    const double build_ms = build_public_index(index, options, words, zipf, corpus_rng);
+    const std::vector<DocumentText> pool = make_writer_pool(options, words, zipf);
+
+    std::size_t sink = 0;
+    timed_index_passes(index, keystrokes, 1, sink);
+    const std::size_t docs_before = index.size();
+    const std::vector<double> idle = timed_index_passes(index, keystrokes, options.passes, sink);
+    if (options.slowest > 0) {
+        report_slowest(index, keystrokes, options.slowest, sink);
+    }
+
+    const Clock::time_point writing_start = Clock::now();
+    BackgroundWriter writer(index, pool, options.writer_pause_us);
     const std::vector<double> writing = timed_index_passes(index, keystrokes, options.passes, sink);
-    stop.store(true);
-    writer.join();
+    writer.finish();
     const double writing_seconds = microseconds(writing_start, Clock::now()) / 1e6;
+    std::atomic<std::size_t>& added = writer.added;
+    std::atomic<std::size_t>& removed = writer.removed;
+    std::atomic<int>& writer_errors = writer.errors;
 
     const std::size_t docs_after = index.size();
     const std::vector<double> grown = timed_index_passes(index, keystrokes, options.passes, sink);
@@ -436,6 +614,8 @@ Options parse(int argc, char** argv) {
         if (flag == "--removes") options.removes = static_cast<int>(value);
         if (flag == "--fuzzy") options.fuzzy = static_cast<int>(value);
         if (flag == "--indexing") options.indexing = static_cast<int>(value);
+        if (flag == "--scaling") options.scaling = static_cast<int>(value);
+        if (flag == "--slowest") options.slowest = static_cast<int>(value);
         if (flag == "--writer_pause_us") options.writer_pause_us = static_cast<int>(value);
         if (flag == "--seed") options.seed = static_cast<std::uint64_t>(value);
     }
@@ -499,6 +679,19 @@ int main(int argc, char** argv) {
     std::cout << std::fixed << std::setprecision(1);
     std::filesystem::remove(stop_file);
 
+    std::cout << "machine compiler=\"" << __VERSION__ << "\" optimized="
+#ifdef __OPTIMIZE__
+              << 1
+#else
+              << 0
+#endif
+              << " ndebug="
+#ifdef NDEBUG
+              << 1
+#else
+              << 0
+#endif
+              << " hardware_threads=" << std::thread::hardware_concurrency() << "\n";
     std::cout << "corpus docs=" << options.docs << " vocab=" << options.vocab << " stop=" << options.stop
               << " index_terms=" << indexer.get_index().get_unique_terms_count()
               << " build_ms=" << build_ms << "\n";
@@ -552,5 +745,6 @@ int main(int argc, char** argv) {
                   << "  p99_us=" << std::setw(9) << percentile(in_bucket, 0.99) << "\n";
     }
     const bool indexing_ok = options.indexing == 0 || measure_indexing(options, words, zipf, corpus_rng, keystrokes);
-    return audit.errors == 0 && persistence.mismatches == 0 && indexing_ok ? 0 : 1;
+    const bool scaling_ok = options.scaling == 0 || measure_scaling(options, words, zipf, corpus_rng, keystrokes);
+    return audit.errors == 0 && persistence.mismatches == 0 && indexing_ok && scaling_ok ? 0 : 1;
 }

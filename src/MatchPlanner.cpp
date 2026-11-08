@@ -41,26 +41,38 @@ std::vector<std::string> kept_completions(const Scope& scope, const std::string&
     return kept;
 }
 
+struct RankedMatch {
+    FuzzyMatch match;
+    std::size_t frequency;
+};
+
 std::vector<FuzzyMatch> fuzzy_candidates(const InvertedIndex& index, const std::string& term) {
     const std::size_t max_distance = fuzzy_max_distance(utf8::count_code_points(term));
     std::vector<FuzzyMatch> matches;
     if (max_distance == 0) {
         return matches;
     }
+
+    std::vector<RankedMatch> ranked;
     for (FuzzyMatch& match : index.fuzzy_terms(term, max_distance)) {
         if (match.distance > 0) {
-            matches.push_back(std::move(match));
+            const std::vector<Posting>* postings = index.get_postings(match.term);
+            ranked.push_back({std::move(match), postings ? postings->size() : std::size_t{0}});
         }
     }
-    auto frequency = [&index](const FuzzyMatch& match) {
-        const std::vector<Posting>* postings = index.get_postings(match.term);
-        return postings ? postings->size() : std::size_t{0};
-    };
-    std::ranges::stable_sort(matches, [&](const FuzzyMatch& a, const FuzzyMatch& b) {
-        return a.distance != b.distance ? a.distance < b.distance : frequency(a) > frequency(b);
-    });
-    if (matches.size() > max_fuzzy_candidates) {
-        matches.resize(max_fuzzy_candidates);
+
+    const std::size_t kept = std::min(ranked.size(), max_fuzzy_candidates);
+    std::partial_sort(ranked.begin(), ranked.begin() + kept, ranked.end(),
+                      [](const RankedMatch& a, const RankedMatch& b) {
+                          if (a.match.distance != b.match.distance) {
+                              return a.match.distance < b.match.distance;
+                          }
+                          return a.frequency != b.frequency ? a.frequency > b.frequency : a.match.term < b.match.term;
+                      });
+
+    matches.reserve(kept);
+    for (std::size_t i = 0; i < kept; i++) {
+        matches.push_back(std::move(ranked[i].match));
     }
     return matches;
 }
