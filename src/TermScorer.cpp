@@ -41,16 +41,6 @@ PrefixTally* merge_runs(const PrefixTally* a, const PrefixTally* a_end,
     return std::copy(b, b_end, out);
 }
 
-ScoredDocs by_doc(const std::unordered_map<int, double>& scores) {
-    ScoredDocs docs;
-    docs.reserve(scores.size());
-    for (const auto& [doc_id, score] : scores) {
-        docs.push_back({doc_id, score});
-    }
-    std::ranges::sort(docs, {}, &ScoredDoc::doc_id);
-    return docs;
-}
-
 }
 
 bool ranks_before(const SearchHit& a, const SearchHit& b) {
@@ -245,18 +235,37 @@ ScoredDocs TermScorer::score_fuzzy(const std::vector<FuzzyMatch>& candidates, co
         exact_floor = std::min(exact_floor, doc.score);
     }
 
-    DocScores best;
+    ScoredDocs best;
+    ScoredDocs merged;
     for (const FuzzyMatch& match : candidates) {
         const double factor = fuzzy_score_factor(match.distance);
-        for (const auto& [doc_id, score] : score_by_doc(match.term)) {
-            if (std::ranges::binary_search(exact, doc_id, {}, &ScoredDoc::doc_id)) {
+        const ScoredDocs scored = score_by_doc(match.term);
+        merged.clear();
+        merged.reserve(best.size() + scored.size());
+        auto known = best.begin();
+        auto excluded = exact.begin();
+        for (const ScoredDoc& doc : scored) {
+            while (excluded != exact.end() && excluded->doc_id < doc.doc_id) {
+                ++excluded;
+            }
+            if (excluded != exact.end() && excluded->doc_id == doc.doc_id) {
                 continue;
             }
-            double& slot = best[doc_id];
-            slot = std::max(slot, factor * std::min(score, exact_floor));
+            for (; known != best.end() && known->doc_id < doc.doc_id; ++known) {
+                merged.push_back(*known);
+            }
+            const double candidate = factor * std::min(doc.score, exact_floor);
+            if (known != best.end() && known->doc_id == doc.doc_id) {
+                merged.push_back({doc.doc_id, std::max(known->score, candidate)});
+                ++known;
+            } else {
+                merged.push_back({doc.doc_id, std::max(0.0, candidate)});
+            }
         }
+        merged.insert(merged.end(), known, best.end());
+        best.swap(merged);
     }
-    return by_doc(best);
+    return best;
 }
 
 TermScorer::PhraseTally TermScorer::phrase(const std::vector<std::string>& terms) const {
