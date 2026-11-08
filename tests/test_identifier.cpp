@@ -257,8 +257,8 @@ TEST(identifier_search_with_keep_original_matches_whole_identifier_too) {
     CHECK_EQ(hits.front().doc_id, target);
     CHECK_EQ(hits.back().doc_id, other);
 
-    CHECK_EQ(code.index.get_postings("getusername") != nullptr, true);
-    CHECK_EQ(code.index.get_postings("user") != nullptr, true);
+    CHECK_EQ(code.index.get_document_frequency("getusername") > 0, true);
+    CHECK_EQ(code.index.get_document_frequency("user") > 0, true);
 }
 
 TEST(identifier_search_non_ascii_identifier_by_folded_word) {

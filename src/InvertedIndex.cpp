@@ -1,16 +1,9 @@
 #include "InvertedIndex.h"
 
 #include <algorithm>
+#include <atomic>
 
 namespace {
-
-const std::vector<Posting>& postings_of(const std::vector<Posting>& postings) {
-    return postings;
-}
-
-const std::vector<Posting>& postings_of(const PostingList& list) {
-    return list.postings;
-}
 
 int frequency_of(int frequency) {
     return frequency;
@@ -20,7 +13,15 @@ int frequency_of(const std::vector<std::uint32_t>& positions) {
     return static_cast<int>(positions.size());
 }
 
+template <typename T>
+void make_room_for(std::vector<T>& values, std::size_t extra) {
+    if (values.size() + extra > values.capacity()) {
+        values.reserve(values.size() + std::max(extra, std::max<std::size_t>(1, values.size() / 4)));
+    }
+}
+
 std::size_t insert_posting(std::vector<Posting>& postings, int doc_id, int freq) {
+    make_room_for(postings, 1);
     auto pos = std::ranges::lower_bound(postings, doc_id, {}, &Posting::doc_id);
     const std::size_t index = pos - postings.begin();
     postings.insert(pos, Posting{doc_id, freq});
@@ -30,6 +31,7 @@ std::size_t insert_posting(std::vector<Posting>& postings, int doc_id, int freq)
 void insert_posting(PostingList& list, int doc_id, int freq, int) {
     const std::size_t index = insert_posting(list.postings, doc_id, freq);
     if (!list.offsets.empty()) {
+        make_room_for(list.offsets, 1);
         list.offsets.insert(list.offsets.begin() + index, PostingList::no_positions);
     }
 }
@@ -39,20 +41,15 @@ void insert_posting(PostingList& list, int doc_id, int, const std::vector<std::u
     if (list.offsets.empty()) {
         list.offsets.assign(list.postings.size(), PostingList::no_positions);
     } else {
+        make_room_for(list.offsets, 1);
         list.offsets.insert(list.offsets.begin() + index, PostingList::no_positions);
     }
     list.offsets[index] = static_cast<std::uint32_t>(list.positions.size());
     const std::size_t first = list.positions.size();
+    make_room_for(list.positions, positions.size());
     list.positions.insert(list.positions.end(), positions.begin(), positions.end());
     if (!std::is_sorted(list.positions.begin() + first, list.positions.end())) {
         std::sort(list.positions.begin() + first, list.positions.end());
-    }
-}
-
-void erase_posting(std::vector<Posting>& postings, int doc_id) {
-    auto it = std::ranges::lower_bound(postings, doc_id, {}, &Posting::doc_id);
-    if (it != postings.end() && it->doc_id == doc_id) {
-        postings.erase(it);
     }
 }
 
@@ -80,43 +77,42 @@ void erase_posting(PostingList& list, int doc_id) {
 }
 
 template <typename Map>
-bool erase_term_posting(Map& map, const std::string& term, int doc_id) {
+void erase_term_posting(Map& map, const std::string& term, int doc_id) {
     auto it = map.find(term);
     if (it == map.end()) {
-        return false;
+        return;
     }
     erase_posting(it->second, doc_id);
-    if (postings_of(it->second).empty()) {
+    if (it->second.postings.empty()) {
         map.erase(it);
-        return true;
     }
-    return false;
 }
 
-const std::vector<Posting>* posting_pointer(const std::vector<Posting>& postings) {
-    return &postings;
 }
 
-const std::vector<Posting>* posting_pointer(const PostingList& list) {
-    return &list.postings;
+std::uint64_t InvertedIndex::StateStamp::next() {
+    static std::atomic<std::uint64_t> counter{1};
+    return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
-template <typename Map>
-std::vector<TermPostings> prefix_matches(const Map& map, std::string_view prefix) {
-    std::vector<TermPostings> matches;
-    for (auto it = map.lower_bound(prefix); it != map.end() && it->first.starts_with(prefix); ++it) {
-        matches.push_back({it->first, posting_pointer(it->second)});
+std::vector<const std::string*> InvertedIndex::distinct_terms(const std::vector<IndexedField>& indexed) {
+    std::vector<const std::string*> terms;
+    for (const IndexedField& entry : indexed) {
+        terms.insert(terms.end(), entry.terms.begin(), entry.terms.end());
     }
-    return matches;
-}
-
+    if (indexed.size() > 1) {
+        std::ranges::sort(terms, [](const std::string* a, const std::string* b) { return *a < *b; });
+        terms.erase(std::ranges::unique(terms, [](const std::string* a, const std::string* b) { return *a == *b; })
+                        .begin(),
+                    terms.end());
+    }
+    return terms;
 }
 
 template <typename TermMap>
 void InvertedIndex::add_fields(int doc_id, const std::unordered_map<std::string, TermMap>& fields_to_add) {
     remove_document(doc_id);
 
-    std::unordered_map<std::string_view, int> merged;
     std::vector<IndexedField>& indexed = doc_fields[doc_id];
     for (const auto& [field, term_entries] : fields_to_add) {
         if (term_entries.empty()) {
@@ -136,7 +132,6 @@ void InvertedIndex::add_fields(int doc_id, const std::unordered_map<std::string,
             const auto term_it = field_index.terms.try_emplace(term).first;
             insert_posting(term_it->second, doc_id, freq, occurrences);
             entry.terms.push_back(&term_it->first);
-            merged[term_it->first] += freq;
         }
         if (static_cast<std::size_t>(doc_id) >= field_index.lengths.size()) {
             field_index.lengths.resize(static_cast<std::size_t>(doc_id) + 1);
@@ -145,15 +140,16 @@ void InvertedIndex::add_fields(int doc_id, const std::unordered_map<std::string,
         field_index.total_length += length;
     }
 
-    for (const auto& [term, freq] : merged) {
-        auto it = index.lower_bound(term);
-        if (it == index.end() || it->first != term) {
-            it = index.emplace_hint(it, std::string(term), std::vector<Posting>{});
-            fuzzy.add(term);
+    for (const std::string* term : distinct_terms(indexed)) {
+        auto it = doc_freqs.lower_bound(*term);
+        if (it == doc_freqs.end() || it->first != *term) {
+            it = doc_freqs.emplace_hint(it, *term, 0);
+            fuzzy.add(*term);
         }
-        insert_posting(it->second, doc_id, freq);
+        it->second++;
     }
     total_documents++;
+    stamp.touch();
 }
 
 void InvertedIndex::add_document(int doc_id, const FieldTermFreqs& field_term_freqs) {
@@ -169,13 +165,19 @@ void InvertedIndex::remove_document(int doc_id) {
     if (it == doc_fields.end()) {
         return;
     }
+    stamp.touch();
+
+    for (const std::string* term : distinct_terms(it->second)) {
+        const auto frequency = doc_freqs.find(*term);
+        if (--frequency->second == 0) {
+            fuzzy.remove(*term);
+            doc_freqs.erase(frequency);
+        }
+    }
 
     for (const IndexedField& entry : it->second) {
         FieldIndex& field_index = entry.field->second;
         for (const std::string* term : entry.terms) {
-            if (erase_term_posting(index, *term, doc_id)) {
-                fuzzy.remove(*term);
-            }
             erase_term_posting(field_index.terms, *term, doc_id);
         }
         const std::size_t slot = static_cast<std::size_t>(doc_id);
@@ -191,12 +193,9 @@ void InvertedIndex::remove_document(int doc_id) {
     total_documents--;
 }
 
-const std::vector<Posting>* InvertedIndex::get_postings(const std::string& term) const {
-    auto it = index.find(term);
-    if (it != index.end()) {
-        return &(it->second);
-    }
-    return nullptr;
+std::size_t InvertedIndex::get_document_frequency(const std::string& term) const {
+    const auto it = doc_freqs.find(term);
+    return it == doc_freqs.end() ? 0 : it->second;
 }
 
 const std::vector<Posting>* InvertedIndex::get_postings(std::string_view field, const std::string& term) const {
@@ -227,9 +226,6 @@ std::vector<std::string_view> InvertedIndex::field_names() const {
 
 IndexMemory InvertedIndex::memory_usage() const {
     IndexMemory usage{0, 0};
-    for (const auto& [term, postings] : index) {
-        usage.posting_bytes += postings.capacity() * sizeof(Posting);
-    }
     for (const auto& [field, field_index] : fields) {
         for (const auto& [term, list] : field_index.terms) {
             usage.posting_bytes += list.postings.capacity() * sizeof(Posting);
@@ -251,7 +247,11 @@ std::vector<FieldPostings> InvertedIndex::get_field_postings(const std::string& 
 }
 
 std::vector<TermPostings> InvertedIndex::terms_with_prefix(std::string_view prefix) const {
-    return prefix_matches(index, prefix);
+    std::vector<TermPostings> matches;
+    for (auto it = doc_freqs.lower_bound(prefix); it != doc_freqs.end() && it->first.starts_with(prefix); ++it) {
+        matches.push_back({it->first, it->second});
+    }
+    return matches;
 }
 
 std::vector<TermPostings> InvertedIndex::terms_with_prefix(std::string_view field, std::string_view prefix) const {
@@ -259,7 +259,12 @@ std::vector<TermPostings> InvertedIndex::terms_with_prefix(std::string_view fiel
     if (field_it == fields.end()) {
         return {};
     }
-    return prefix_matches(field_it->second.terms, prefix);
+    const PostingListMap& terms = field_it->second.terms;
+    std::vector<TermPostings> matches;
+    for (auto it = terms.lower_bound(prefix); it != terms.end() && it->first.starts_with(prefix); ++it) {
+        matches.push_back({it->first, it->second.postings.size()});
+    }
+    return matches;
 }
 
 int InvertedIndex::get_field_documents(std::string_view field) const {

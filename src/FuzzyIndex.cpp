@@ -121,25 +121,47 @@ void FuzzyIndex::remove(std::string_view term) {
 void FuzzyIndex::collect(std::uint32_t node, std::size_t depth, const std::vector<char32_t>& query,
                          std::vector<std::size_t>& rows, std::size_t max_distance,
                          std::vector<FuzzyMatch>& out) const {
-    const std::size_t width = query.size() + 1;
+    const std::size_t length = query.size();
+    const std::size_t width = length + 1;
     const std::size_t* row = rows.data() + depth * width;
     std::size_t* next = rows.data() + (depth + 1) * width;
+    const std::size_t cap = max_distance + 1;
 
-    if (nodes[node].term_id != none && row[width - 1] <= max_distance) {
-        out.push_back({terms[nodes[node].term_id], row[width - 1]});
+    if (nodes[node].term_id != none && depth <= length + max_distance && length <= depth + max_distance &&
+        row[length] <= max_distance) {
+        out.push_back({terms[nodes[node].term_id], row[length]});
+    }
+
+    const std::size_t next_depth = depth + 1;
+    const std::size_t first = next_depth > max_distance ? next_depth - max_distance : 0;
+    const std::size_t last = std::min(length, next_depth + max_distance);
+    if (first > length) {
+        return;
     }
 
     for (std::uint32_t child = nodes[node].first_child; child != none; child = nodes[child].next_sibling) {
         const char32_t code_point = nodes[child].code_point;
-        next[0] = row[0] + 1;
-        std::size_t row_minimum = next[0];
-        for (std::size_t j = 1; j < width; j++) {
+        std::size_t left = cap;
+        std::size_t row_minimum = cap;
+        std::size_t j = first;
+        if (first == 0) {
+            left = std::min(row[0] + 1, cap);
+            next[0] = left;
+            row_minimum = left;
+            j = 1;
+        }
+        for (; j <= last; j++) {
             const std::size_t substitution = row[j - 1] + (query[j - 1] == code_point ? 0 : 1);
-            next[j] = std::min({row[j] + 1, next[j - 1] + 1, substitution});
-            row_minimum = std::min(row_minimum, next[j]);
+            const std::size_t value = std::min({row[j] + 1, left + 1, substitution, cap});
+            next[j] = value;
+            left = value;
+            row_minimum = std::min(row_minimum, value);
+        }
+        if (last < length) {
+            next[last + 1] = cap;
         }
         if (row_minimum <= max_distance) {
-            collect(child, depth + 1, query, rows, max_distance, out);
+            collect(child, next_depth, query, rows, max_distance, out);
         }
     }
 }

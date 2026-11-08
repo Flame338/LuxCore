@@ -25,8 +25,12 @@ struct Scope {
     const FieldBoosts& boosts;
     std::optional<std::string_view> field;
 
-    const std::vector<Posting>* postings(const std::string& term) const {
-        return field ? index.get_postings(*field, term) : index.get_postings(term);
+    std::size_t document_frequency(const std::string& term) const {
+        if (!field) {
+            return index.get_document_frequency(term);
+        }
+        const std::vector<Posting>* found = index.get_postings(*field, term);
+        return found ? found->size() : 0;
     }
 
     std::vector<TermPostings> terms_with_prefix(std::string_view prefix) const {

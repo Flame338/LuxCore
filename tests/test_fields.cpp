@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include "CombinedPostings.h"
 #include "Indexer.h"
 #include "Searcher.h"
 
@@ -86,7 +87,7 @@ TEST(keyword_field_indexes_its_raw_value_as_one_term_under_its_field) {
     CHECK_EQ(postings_of(index, "sku", "AB-123"), "-");
     CHECK_EQ(postings_of(index, "title", "AB-123 x"), "-");
     CHECK_EQ(postings_of(index, "title", "widget"), "(" + std::to_string(id) + ":1)");
-    CHECK(index.get_postings("AB-123 x") != nullptr);
+    CHECK_EQ(index.get_document_frequency("AB-123 x"), static_cast<std::size_t>(1));
 }
 
 TEST(keyword_field_matches_only_the_exact_value_in_a_scoped_search) {
@@ -118,7 +119,7 @@ TEST(removing_a_document_clears_its_postings_in_every_field) {
     CHECK_EQ(postings_of(index, "title", "cat"), "-");
     CHECK_EQ(postings_of(index, "body", "cat"), "(2:1)");
     CHECK_EQ(postings_of(index, "body", "dog"), "-");
-    CHECK(index.get_postings("dog") == nullptr);
+    CHECK_EQ(index.get_document_frequency("dog"), static_cast<std::size_t>(0));
     CHECK_EQ(index.get_field_documents("title"), 0);
     CHECK_EQ(index.get_field_documents("body"), 1);
     CHECK(index.terms_with_prefix("title", "c").empty());
@@ -130,10 +131,10 @@ TEST(index_keeps_the_same_term_in_two_fields_as_one_combined_posting) {
     InvertedIndex index;
     index.add_document(1, FieldTermFreqs{{"title", {{"cat", 1}}}, {"body", {{"cat", 2}}}});
 
-    const std::vector<Posting>* combined = index.get_postings("cat");
-    CHECK(combined != nullptr);
-    CHECK_EQ(combined->size(), static_cast<std::size_t>(1));
-    CHECK_EQ(combined->front().term_frequency, 3);
+    const std::vector<Posting> combined = combined_postings(index, "cat");
+    CHECK_EQ(index.get_document_frequency("cat"), static_cast<std::size_t>(1));
+    CHECK_EQ(combined.size(), static_cast<std::size_t>(1));
+    CHECK_EQ(combined.front().term_frequency, 3);
     CHECK_EQ(index.get_field_postings("cat").size(), static_cast<std::size_t>(2));
 }
 

@@ -205,3 +205,32 @@ TEST(fuzzy_index_agrees_with_a_brute_force_scan_after_adds_and_removes) {
     index.add("abc");
     CHECK_EQ(describe(index.candidates("abd", 1)), std::string("abc:1,"));
 }
+
+TEST(fuzzy_index_agrees_with_a_brute_force_scan_on_longer_terms_and_larger_distances) {
+    std::mt19937 rng(99);
+    std::vector<std::string> terms;
+    for (int i = 0; i < 500; i++) {
+        terms.push_back(random_term(rng, 14));
+    }
+    const FuzzyIndex index(terms);
+
+    for (int round = 0; round < 120; round++) {
+        const std::string query = random_term(rng, 14);
+        for (std::size_t max_distance = 0; max_distance <= 4; max_distance++) {
+            CHECK_EQ(describe(index.candidates(query, max_distance)),
+                     describe(brute_force(terms, query, max_distance)));
+        }
+    }
+}
+
+TEST(fuzzy_index_finds_terms_that_differ_only_at_the_ends) {
+    const std::vector<std::string> terms{"search", "earch", "searc", "xsearch", "searchx", "xsearchx", "sarch",
+                                         "searchxx", "xxsearch", "seaxrch"};
+    const FuzzyIndex index(terms);
+
+    for (std::size_t max_distance = 0; max_distance <= 3; max_distance++) {
+        CHECK_EQ(describe(index.candidates("search", max_distance)), describe(brute_force(terms, "search", max_distance)));
+        CHECK_EQ(describe(index.candidates("earc", max_distance)), describe(brute_force(terms, "earc", max_distance)));
+        CHECK_EQ(describe(index.candidates("", max_distance)), describe(brute_force(terms, "", max_distance)));
+    }
+}

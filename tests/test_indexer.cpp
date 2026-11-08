@@ -1,17 +1,18 @@
 #include "TestFramework.h"
 
+#include "CombinedPostings.h"
 #include "Indexer.h"
 
 namespace {
 
 std::string docs_for(const Indexer& indexer, const std::string& term) {
-    const std::vector<Posting>* postings = indexer.get_index().get_postings(term);
-    if (postings == nullptr) {
+    const std::vector<Posting> postings = combined_postings(indexer.get_index(), term);
+    if (postings.empty()) {
         return "-";
     }
 
     std::string text;
-    for (const Posting& posting : *postings) {
+    for (const Posting& posting : postings) {
         text += "(" + std::to_string(posting.doc_id) + ":" + std::to_string(posting.term_frequency) + ")";
     }
     return text;

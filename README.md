@@ -85,7 +85,7 @@ The path is UTF-8 on every platform. On Windows the library converts it to a wid
 
 The file holds the primary state only. That is the stored fields of every live document, including the gaps left by removed documents so that internal ids are never reused, the key of every keyed document, and for each field the sorted term dictionary with one posting list per term. A posting holds a document id, a term frequency and the positions of the term.
 
-Everything else is rebuilt while loading. This covers the combined term map that `Searcher` uses, the fuzzy matching trie, the length of every field in every document, the document counts and averages that BM25 needs, and the per-document term lists that removal uses. A field length is the sum of the term frequencies in its postings, so the file does not repeat it and the two cannot disagree.
+Everything else is rebuilt while loading. This covers the document frequency of every term, the fuzzy matching trie, the length of every field in every document, the document counts and averages that BM25 needs, and the per-document term lists that removal uses. A field length is the sum of the term frequencies in its postings, so the file does not repeat it and the two cannot disagree.
 
 ### Format
 
@@ -115,7 +115,7 @@ Measured on an Intel Core i7-13700K, Windows 11, g++ 16.1.0 with `-O2 -DNDEBUG`,
 | Save | 66 to 69 ms | 37.3 MB file |
 | Load | 201 to 217 ms | 11.1 to 12.1 times faster than building |
 
-In one profiled run the 220 ms of a load split into about 25 ms for the stored documents, 11 ms for the keys, and 166 ms for the postings. Of the postings time, about 54 ms is parsing, 39 ms builds the per-document term entries, 33 ms fills their term lists, 15 ms builds the fuzzy trie, and the rest merges the per-field lists into the combined map. The reading of the file is the remaining 20 ms.
+In one profiled run the 220 ms of a load split into about 25 ms for the stored documents, 11 ms for the keys, and 166 ms for the postings. Of the postings time, about 54 ms is parsing, 39 ms builds the per-document term entries, 33 ms fills their term lists, 15 ms builds the fuzzy trie, and the rest counts, for each term, the documents that hold it in any field. The reading of the file is the remaining 20 ms.
 
 ## Thread safety
 
@@ -140,7 +140,13 @@ A GUI app can index in the background while its UI thread searches on every keys
 
 ### What was already true
 
-Concurrent reads of an unchanged `Indexer` and `Searcher` were safe before the lock, and they still are. The const methods share no mutable state. There is no `mutable` member and no static or thread local cache in `include/` or `src/`. The test `threads_concurrent_reads_on_an_unchanged_searcher_match_single_thread` runs 8 threads, half on one shared `Searcher` and half on a `Searcher` of their own, and each result must equal the single-threaded result, including scores. Its twin for `Index` does the same through the public class. Both passed before any production change, and ThreadSanitizer reports nothing for either of them on the code without the lock.
+Concurrent reads of an unchanged `Indexer` and `Searcher` were safe before the lock, and they still are. The const methods share no mutable state. There is no `mutable` member and no static cache in `include/` or `src/`. The one thread local cache is the list of fuzzy candidates described under Fuzzy candidate cache. The test `threads_concurrent_reads_on_an_unchanged_searcher_match_single_thread` runs 8 threads, half on one shared `Searcher` and half on a `Searcher` of their own, and each result must equal the single-threaded result, including scores. Its twin for `Index` does the same through the public class. Both passed before any production change, and ThreadSanitizer reports nothing for either of them on the code without the lock.
+
+### Fuzzy candidate cache
+
+A finished word is fuzzed again on every later keystroke, and finding its candidates was about a third of a keystroke. `MatchPlanner` keeps the last 16 results in a thread local cache, keyed by the word and by a state stamp of the `InvertedIndex`. Every `add`, `remove` and `read` gives the index a fresh stamp from one global counter. A move hands the stamp to the new owner and gives the old object a new one, so an entry made for one state of one index never matches another state or another index. The cache holds no pointer to an index, takes no lock and is not shared between threads, so a stale entry can only ever be a miss.
+
+On the 100,000 document bench corpus with fuzzy matching on, about 90% of the lookups while typing left to right were hits, and the median keystroke on the public `Index` fell from 109 to 27 us when idle (median of 5 runs, same machine as the tables below). A writer that changes the index retires the entries, so the cache helps less while a bulk indexer runs. With a writer adding a document every 200 us the median keystroke still fell from 135 to 73 us. The 99th percentile did not change, because the slowest keystrokes are dominated by scoring long posting lists. Each thread that searches holds up to 16 small entries until it exits. In a Windows DLL the thread exit runs their destructors, so unload the library only after its search threads have finished.
 
 ### Why a lock
 
@@ -245,11 +251,11 @@ Results are collected with a bounded priority queue that keeps the best `top_k` 
 
 ### Positions
 
-The field index keeps the positions of every term occurrence next to its postings. A `PostingList` holds the sorted postings, one offset per posting, and one flat pool of positions that the offsets point into. The combined index used by `Searcher` keeps plain postings without positions. On the 100k document bench corpus the positions take 19 MB next to 38 MB of postings, and the peak working set grows from about 246 MB to 269 MB.
+The field index keeps the positions of every term occurrence next to its postings. A `PostingList` holds the sorted postings, one offset per posting, and one flat pool of positions that the offsets point into. Terms across all fields keep only a document frequency, which is all that scoring reads from them. On the 100k document bench corpus the positions take 19 MB next to 38 MB of postings, and the peak working set grows from about 246 MB to 269 MB.
 
 `Indexer` keeps positions unless `IndexOptions{.positions = false}` turns them off. Without positions each posting list holds no offsets and no position pool, so `PhraseQuery` matches nothing on such an index. The public `luxcore::Index` runs a plain text search and has no phrase query, so it always indexes without positions. A file it saves holds no positions, and `Index::load` drops the positions of a file that has them. `Indexer::deserialize(bytes, stop_words_path, options)` takes the same options. The file format is unchanged, because a posting already says whether it carries positions.
 
-On a 100,000 document corpus of 21 MB of text, the public `Index` grew the process by about 185 MB while building and by about 174 MB while loading, down from about 334 MB and 283 MB before positions were dropped and the per-document bookkeeping was slimmed. The file it saves went from 36.0 MB to 32.7 MB. These figures come from a random Zipf corpus and the Windows working set, so treat them as a ratio, not as a promise.
+On a 100,000 document corpus of 21 MB of text, the public `Index` grew the process by about 114 MB while building and by about 115 MB while loading, down from about 334 MB and 283 MB before positions were dropped and the per-document bookkeeping, the fuzzy trie, the stored text and the combined postings were slimmed. The file it saves went from 36.0 MB to 32.7 MB. These figures come from a random Zipf corpus and the Windows working set, so treat them as a ratio, not as a promise.
 
 ## Highlighting
 

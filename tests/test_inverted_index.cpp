@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include "CombinedPostings.h"
 #include "InvertedIndex.h"
 
 namespace {
@@ -9,13 +10,13 @@ void add_body(InvertedIndex& index, int doc_id, const TermFreqs& term_freqs) {
 }
 
 std::string postings_of(const InvertedIndex& index, const std::string& term) {
-    const std::vector<Posting>* postings = index.get_postings(term);
-    if (postings == nullptr) {
+    const std::vector<Posting> postings = combined_postings(index, term);
+    if (postings.empty()) {
         return "-";
     }
 
     std::string text;
-    for (const Posting& posting : *postings) {
+    for (const Posting& posting : postings) {
         text += "(" + std::to_string(posting.doc_id) + ":" + std::to_string(posting.term_frequency) + ")";
     }
     return text;
@@ -46,7 +47,7 @@ TEST(index_returns_null_for_an_unknown_term) {
     InvertedIndex index;
     add_body(index, 1, TermFreqs{{"cat", 1}});
 
-    CHECK(index.get_postings("bird") == nullptr);
+    CHECK_EQ(index.get_document_frequency("bird"), static_cast<std::size_t>(0));
 }
 
 TEST(index_keeps_postings_sorted_by_doc_id_whatever_the_insert_order) {
@@ -74,7 +75,7 @@ TEST(index_re_adding_a_document_replaces_its_old_terms) {
     add_body(index, 1, TermFreqs{{"bird", 2}});
 
     CHECK_EQ(index.get_total_documents(), 2);
-    CHECK(index.get_postings("cat") == nullptr);
+    CHECK_EQ(index.get_document_frequency("cat"), static_cast<std::size_t>(0));
     CHECK_EQ(postings_of(index, "dog"), "(2:3)");
     CHECK_EQ(postings_of(index, "bird"), "(1:2)");
     CHECK_EQ(index.get_unique_terms_count(), static_cast<std::size_t>(2));
@@ -116,7 +117,7 @@ TEST(index_removing_a_document_drops_its_postings_and_empty_terms) {
     index.remove_document(1);
 
     CHECK_EQ(index.get_total_documents(), 1);
-    CHECK(index.get_postings("cat") == nullptr);
+    CHECK_EQ(index.get_document_frequency("cat"), static_cast<std::size_t>(0));
     CHECK_EQ(postings_of(index, "dog"), "(2:1)");
     CHECK_EQ(index.get_unique_terms_count(), static_cast<std::size_t>(1));
 }
@@ -137,7 +138,7 @@ TEST(index_lists_terms_with_a_prefix_in_sorted_order) {
 
     CHECK_EQ(terms_with_prefix_of(index, "sea"), "sea,seal,search,searching,");
     for (const TermPostings& match : index.terms_with_prefix("sea")) {
-        CHECK(match.postings == index.get_postings(std::string(match.term)));
+        CHECK_EQ(match.document_frequency, index.get_document_frequency(std::string(match.term)));
     }
 }
 

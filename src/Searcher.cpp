@@ -127,7 +127,7 @@ std::vector<Suggestion> Searcher::suggest_scoped(const std::string& query_string
     std::vector<Suggestion> suggestions;
     suggestions.reserve(kept - matches.begin());
     for (auto it = matches.begin(); it != kept; ++it) {
-        suggestions.push_back({std::string(it->term), it->postings->size()});
+        suggestions.push_back({std::string(it->term), it->document_frequency});
     }
     return suggestions;
 }
