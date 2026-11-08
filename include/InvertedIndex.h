@@ -28,12 +28,15 @@ struct PostingList {
     std::vector<std::uint32_t> offsets;
     std::vector<std::uint32_t> positions;
 
+    bool has_positions(std::size_t index) const {
+        return !offsets.empty() && offsets[index] != no_positions;
+    }
+
     std::span<const std::uint32_t> positions_of(std::size_t index) const {
-        const std::uint32_t offset = offsets[index];
-        if (offset == no_positions) {
+        if (!has_positions(index)) {
             return {};
         }
-        return {positions.data() + offset, static_cast<std::size_t>(postings[index].term_frequency)};
+        return {positions.data() + offsets[index], static_cast<std::size_t>(postings[index].term_frequency)};
     }
 };
 
@@ -64,19 +67,21 @@ class InvertedIndex {
 
         struct FieldIndex {
             PostingListMap terms;
-            std::unordered_map<int, int> lengths;
+            std::vector<int> lengths;
             long long total_length = 0;
             int documents = 0;
         };
 
+        using FieldMap = std::map<std::string, FieldIndex, std::less<>>;
+
         struct IndexedField {
-            std::string field;
-            std::vector<std::string> terms;
+            FieldMap::iterator field;
+            std::vector<const std::string*> terms;
         };
 
         PostingMap index;
         FuzzyIndex fuzzy;
-        std::map<std::string, FieldIndex, std::less<>> fields;
+        FieldMap fields;
         std::unordered_map<int, std::vector<IndexedField>> doc_fields;
         int total_documents = 0;
 
@@ -84,6 +89,12 @@ class InvertedIndex {
         void add_fields(int doc_id, const std::unordered_map<std::string, TermMap>& fields_to_add);
 
     public:
+        InvertedIndex() = default;
+        InvertedIndex(const InvertedIndex&) = delete;
+        InvertedIndex& operator=(const InvertedIndex&) = delete;
+        InvertedIndex(InvertedIndex&&) = default;
+        InvertedIndex& operator=(InvertedIndex&&) = default;
+
         void add_document(int doc_id, const FieldTermFreqs& field_term_freqs);
         void add_document(int doc_id, const FieldTermPositions& field_term_positions);
         void remove_document(int doc_id);
@@ -102,10 +113,11 @@ class InvertedIndex {
         int get_total_documents() const { return total_documents; }
         int get_field_documents(std::string_view field) const;
         int get_field_length(std::string_view field, int doc_id) const;
+        std::span<const int> get_field_lengths(std::string_view field) const;
         double get_average_field_length(std::string_view field) const;
         std::size_t get_unique_terms_count() const { return index.size(); }
         IndexMemory memory_usage() const;
 
         void write(ByteWriter& writer) const;
-        static InvertedIndex read(ByteReader& reader, const DocumentStore& store);
+        static InvertedIndex read(ByteReader& reader, const DocumentStore& store, bool keep_positions = true);
 };
