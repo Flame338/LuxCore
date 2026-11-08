@@ -1,6 +1,7 @@
 #include "InvertedIndex.h"
 
 #include <algorithm>
+#include <atomic>
 
 namespace {
 
@@ -89,6 +90,11 @@ void erase_term_posting(Map& map, const std::string& term, int doc_id) {
 
 }
 
+std::uint64_t InvertedIndex::StateStamp::next() {
+    static std::atomic<std::uint64_t> counter{1};
+    return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
 std::vector<const std::string*> InvertedIndex::distinct_terms(const std::vector<IndexedField>& indexed) {
     std::vector<const std::string*> terms;
     for (const IndexedField& entry : indexed) {
@@ -143,6 +149,7 @@ void InvertedIndex::add_fields(int doc_id, const std::unordered_map<std::string,
         it->second++;
     }
     total_documents++;
+    stamp.touch();
 }
 
 void InvertedIndex::add_document(int doc_id, const FieldTermFreqs& field_term_freqs) {
@@ -158,6 +165,7 @@ void InvertedIndex::remove_document(int doc_id) {
     if (it == doc_fields.end()) {
         return;
     }
+    stamp.touch();
 
     for (const std::string* term : distinct_terms(it->second)) {
         const auto frequency = doc_freqs.find(*term);

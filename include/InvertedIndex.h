@@ -79,7 +79,25 @@ class InvertedIndex {
             std::vector<const std::string*> terms;
         };
 
+        struct StateStamp {
+            std::uint64_t value;
+
+            StateStamp() : value(next()) {}
+            StateStamp(StateStamp&& other) noexcept : value(other.value) { other.value = next(); }
+            StateStamp& operator=(StateStamp&& other) noexcept {
+                if (this != &other) {
+                    value = other.value;
+                    other.value = next();
+                }
+                return *this;
+            }
+
+            void touch() { value = next(); }
+            static std::uint64_t next();
+        };
+
         FrequencyMap doc_freqs;
+        StateStamp stamp;
         FuzzyIndex fuzzy;
         FieldMap fields;
         std::unordered_map<int, std::vector<IndexedField>> doc_fields;
@@ -112,6 +130,7 @@ class InvertedIndex {
             return fuzzy.candidates(term, max_distance);
         }
 
+        std::uint64_t state() const { return stamp.value; }
         int get_total_documents() const { return total_documents; }
         int get_field_documents(std::string_view field) const;
         int get_field_length(std::string_view field, int doc_id) const;

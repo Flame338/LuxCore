@@ -140,7 +140,13 @@ A GUI app can index in the background while its UI thread searches on every keys
 
 ### What was already true
 
-Concurrent reads of an unchanged `Indexer` and `Searcher` were safe before the lock, and they still are. The const methods share no mutable state. There is no `mutable` member and no static or thread local cache in `include/` or `src/`. The test `threads_concurrent_reads_on_an_unchanged_searcher_match_single_thread` runs 8 threads, half on one shared `Searcher` and half on a `Searcher` of their own, and each result must equal the single-threaded result, including scores. Its twin for `Index` does the same through the public class. Both passed before any production change, and ThreadSanitizer reports nothing for either of them on the code without the lock.
+Concurrent reads of an unchanged `Indexer` and `Searcher` were safe before the lock, and they still are. The const methods share no mutable state. There is no `mutable` member and no static cache in `include/` or `src/`. The one thread local cache is the list of fuzzy candidates described under Fuzzy candidate cache. The test `threads_concurrent_reads_on_an_unchanged_searcher_match_single_thread` runs 8 threads, half on one shared `Searcher` and half on a `Searcher` of their own, and each result must equal the single-threaded result, including scores. Its twin for `Index` does the same through the public class. Both passed before any production change, and ThreadSanitizer reports nothing for either of them on the code without the lock.
+
+### Fuzzy candidate cache
+
+A finished word is fuzzed again on every later keystroke, and finding its candidates was about a third of a keystroke. `MatchPlanner` keeps the last 16 results in a thread local cache, keyed by the word and by a state stamp of the `InvertedIndex`. Every `add`, `remove` and `read` gives the index a fresh stamp from one global counter. A move hands the stamp to the new owner and gives the old object a new one, so an entry made for one state of one index never matches another state or another index. The cache holds no pointer to an index, takes no lock and is not shared between threads, so a stale entry can only ever be a miss.
+
+On the 100,000 document bench corpus with fuzzy matching on, about 90% of the lookups while typing left to right were hits, and the median keystroke on the public `Index` fell from 109 to 27 us when idle (median of 5 runs, same machine as the tables below). A writer that changes the index retires the entries, so the cache helps less while a bulk indexer runs. With a writer adding a document every 200 us the median keystroke still fell from 135 to 73 us. The 99th percentile did not change, because the slowest keystrokes are dominated by scoring long posting lists. Each thread that searches holds up to 16 small entries until it exits. In a Windows DLL the thread exit runs their destructors, so unload the library only after its search threads have finished.
 
 ### Why a lock
 

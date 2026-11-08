@@ -3,6 +3,7 @@
 #include "Utf8.h"
 
 #include <algorithm>
+#include <array>
 #include <utility>
 
 namespace {
@@ -46,12 +47,41 @@ struct RankedMatch {
     std::size_t frequency;
 };
 
+struct CachedCandidates {
+    std::uint64_t state = 0;
+    std::string term;
+    std::vector<FuzzyMatch> matches;
+};
+
+constexpr std::size_t candidate_cache_slots = 16;
+
+std::vector<FuzzyMatch> rank_fuzzy_candidates(const InvertedIndex& index, const std::string& term,
+                                              std::size_t max_distance);
+
 std::vector<FuzzyMatch> fuzzy_candidates(const InvertedIndex& index, const std::string& term) {
     const std::size_t max_distance = fuzzy_max_distance(utf8::count_code_points(term));
-    std::vector<FuzzyMatch> matches;
     if (max_distance == 0) {
-        return matches;
+        return {};
     }
+
+    thread_local std::array<CachedCandidates, candidate_cache_slots> cache;
+    thread_local std::size_t next_slot = 0;
+    const std::uint64_t state = index.state();
+    for (const CachedCandidates& entry : cache) {
+        if (entry.state == state && entry.term == term) {
+            return entry.matches;
+        }
+    }
+
+    std::vector<FuzzyMatch> matches = rank_fuzzy_candidates(index, term, max_distance);
+    cache[next_slot] = {state, term, matches};
+    next_slot = (next_slot + 1) % candidate_cache_slots;
+    return matches;
+}
+
+std::vector<FuzzyMatch> rank_fuzzy_candidates(const InvertedIndex& index, const std::string& term,
+                                              std::size_t max_distance) {
+    std::vector<FuzzyMatch> matches;
 
     std::vector<RankedMatch> ranked;
     for (FuzzyMatch& match : index.fuzzy_terms(term, max_distance)) {
