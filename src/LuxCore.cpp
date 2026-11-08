@@ -70,11 +70,11 @@ std::optional<std::string> Index::stored(const std::string& key, const std::stri
     if (!id) {
         return std::nullopt;
     }
-    const Field* found = impl->indexer.get_document(*id).find(field);
-    if (found == nullptr) {
+    const std::optional<std::string_view> found = impl->indexer.stored_value(*id, field);
+    if (!found) {
         return std::nullopt;
     }
-    return found->value;
+    return std::string(*found);
 }
 
 std::vector<Hit> Index::search(const std::string& query, std::size_t limit) const {

@@ -61,7 +61,7 @@ Indexer::Indexer(const std::string& stop_words_path, IndexOptions options)
 
 int Indexer::add_document(const Document& document) {
     Prepared prepared = prepare(analyzer, document, options.positions);
-    const int id = doc_store.add(std::move(prepared.stored));
+    const int id = doc_store.add(prepared.stored);
     if (options.positions) {
         inverted_index.add_document(id, prepared.positioned);
     } else {
@@ -88,7 +88,7 @@ bool Indexer::update_document(int id, const Document& document) {
         return false;
     }
     Prepared prepared = prepare(analyzer, document, options.positions);
-    doc_store.replace(id, std::move(prepared.stored));
+    doc_store.replace(id, prepared.stored);
     if (options.positions) {
         inverted_index.add_document(id, prepared.positioned);
     } else {

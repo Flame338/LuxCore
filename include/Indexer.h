@@ -37,7 +37,10 @@ public:
 
     const InvertedIndex& get_index() const { return inverted_index; }
     const DocumentKeys& get_keys() const { return doc_keys; }
-    const Document& get_document(int id) const { return doc_store.get(id); }
+    Document get_document(int id) const { return doc_store.get(id); }
+    std::optional<std::string_view> stored_value(int id, std::string_view field) const {
+        return doc_store.value_of(id, field);
+    }
     const Analyzer& get_analyzer() const { return analyzer; }
     const IndexOptions& get_options() const { return options; }
 
