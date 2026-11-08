@@ -28,10 +28,13 @@ struct lux_text {
 namespace {
 
 template <typename Body>
-lux_status guarded(Body body) {
+lux_status guarded(Body body, std::size_t* error_offset = nullptr) {
     try {
         return body();
-    } catch (const luxcore::QueryError&) {
+    } catch (const luxcore::QueryError& error) {
+        if (error_offset != nullptr) {
+            *error_offset = error.offset();
+        }
         return LUX_INVALID_QUERY;
     } catch (const std::invalid_argument&) {
         return LUX_INVALID_ARGUMENT;
@@ -76,7 +79,11 @@ luxcore::SnippetOptions snippet_options(const lux_snippet_options* options) {
 template <typename Snippet>
 lux_status snippet_into(const lux_index* index, const char* key, std::size_t key_length, const char* field,
                         std::size_t field_length, const char* query, std::size_t query_length,
-                        const lux_snippet_options* options, lux_text** out, Snippet snippet) {
+                        const lux_snippet_options* options, lux_text** out, std::size_t* error_offset,
+                        Snippet snippet) {
+    if (error_offset != nullptr) {
+        *error_offset = 0;
+    }
     if (out != nullptr) {
         *out = nullptr;
     }
@@ -92,7 +99,7 @@ lux_status snippet_into(const lux_index* index, const char* key, std::size_t key
         }
         *out = new lux_text{std::move(*value)};
         return LUX_OK;
-    });
+    }, error_offset);
 }
 
 }
@@ -227,7 +234,10 @@ lux_status lux_index_search(const lux_index* index, const char* query, std::size
 }
 
 lux_status lux_index_search_query(const lux_index* index, const char* query, std::size_t query_length,
-                                  std::size_t limit, lux_hits** out) {
+                                  std::size_t limit, lux_hits** out, std::size_t* error_offset) {
+    if (error_offset != nullptr) {
+        *error_offset = 0;
+    }
     if (out != nullptr) {
         *out = nullptr;
     }
@@ -237,13 +247,13 @@ lux_status lux_index_search_query(const lux_index* index, const char* query, std
     return guarded([&] {
         *out = new lux_hits{index->index.search_query(std::string(query, query_length), limit)};
         return LUX_OK;
-    });
+    }, error_offset);
 }
 
 lux_status lux_index_snippet(const lux_index* index, const char* key, std::size_t key_length, const char* field,
                              std::size_t field_length, const char* query, std::size_t query_length,
                              const lux_snippet_options* options, lux_text** out) {
-    return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out,
+    return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out, nullptr,
                         [](const luxcore::Index& target, const std::string& key_text, const std::string& field_text,
                            const std::string& query_text, const luxcore::SnippetOptions& settings) {
                             return target.snippet(key_text, field_text, query_text, settings);
@@ -252,8 +262,8 @@ lux_status lux_index_snippet(const lux_index* index, const char* key, std::size_
 
 lux_status lux_index_snippet_query(const lux_index* index, const char* key, std::size_t key_length, const char* field,
                                    std::size_t field_length, const char* query, std::size_t query_length,
-                                   const lux_snippet_options* options, lux_text** out) {
-    return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out,
+                                   const lux_snippet_options* options, lux_text** out, std::size_t* error_offset) {
+    return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out, error_offset,
                         [](const luxcore::Index& target, const std::string& key_text, const std::string& field_text,
                            const std::string& query_text, const luxcore::SnippetOptions& settings) {
                             return target.snippet_query(key_text, field_text, query_text, settings);

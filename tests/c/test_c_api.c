@@ -514,29 +514,29 @@ static void search_query_understands_fields_and_boolean_operators(void) {
     lux_index* index = notes();
     lux_hits* hits = NULL;
 
-    CHECK_STATUS(lux_index_search_query(index, STR("title:list"), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("title:list"), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 2);
     lux_hits_free(hits);
 
-    CHECK_STATUS(lux_index_search_query(index, STR("title:book"), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("title:book"), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 0);
     lux_hits_free(hits);
 
-    CHECK_STATUS(lux_index_search_query(index, STR("+book -train"), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("+book -train"), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 1);
     CHECK(hit_is(hits, 0, "reading"));
     CHECK(lux_hits_score(hits, 0) > 0.0);
     lux_hits_free(hits);
 
-    CHECK_STATUS(lux_index_search_query(index, STR("milk OR raincoat"), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("milk OR raincoat"), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 2);
     lux_hits_free(hits);
 
-    CHECK_STATUS(lux_index_search_query(index, STR("book"), 1, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("book"), 1, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 1);
     lux_hits_free(hits);
 
-    CHECK_STATUS(lux_index_search_query(index, STR("  "), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("  "), 10, &hits, NULL), LUX_OK);
     CHECK(hits != NULL);
     CHECK(lux_hits_count(hits) == 0);
     lux_hits_free(hits);
@@ -547,16 +547,97 @@ static void search_query_understands_fields_and_boolean_operators(void) {
 static void search_query_reports_a_parse_failure_as_invalid_query(void) {
     lux_index* index = notes();
     lux_hits* hits = (lux_hits*)index;
-    lux_status status = lux_index_search_query(index, STR("book (train"), 10, &hits);
+    lux_status status = lux_index_search_query(index, STR("book (train"), 10, &hits, NULL);
 
     CHECK(status == LUX_INVALID_QUERY);
     CHECK(status == 7);
     CHECK(hits == NULL);
     CHECK(strcmp(lux_status_message(status), "invalid query") == 0);
 
-    CHECK_STATUS(lux_index_search_query(index, STR("\"unterminated"), 10, &hits), LUX_INVALID_QUERY);
-    CHECK_STATUS(lux_index_search_query(index, STR("title:"), 10, &hits), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(index, STR("\"unterminated"), 10, &hits, NULL), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(index, STR("title:"), 10, &hits, NULL), LUX_INVALID_QUERY);
 
+    lux_index_free(index);
+}
+
+static void search_query_reports_the_byte_offset_of_a_parse_failure(void) {
+    lux_index* index = notes();
+    lux_hits* hits = NULL;
+    size_t offset = 99;
+
+    CHECK_STATUS(lux_index_search_query(index, STR("tomato (garden"), 10, &hits, &offset), LUX_INVALID_QUERY);
+    CHECK(offset == 7);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, STR("tomato \"garden"), 10, &hits, &offset), LUX_INVALID_QUERY);
+    CHECK(offset == 7);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, STR("fox (bear OR (red)"), 10, &hits, &offset), LUX_INVALID_QUERY);
+    CHECK(offset == 4);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, STR("fox)"), 10, &hits, &offset), LUX_INVALID_QUERY);
+    CHECK(offset == 3);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, STR("title:"), 10, &hits, &offset), LUX_INVALID_QUERY);
+    CHECK(offset == 6);
+
+    CHECK_STATUS(lux_index_search_query(index, STR("tomato (garden"), 10, &hits, NULL), LUX_INVALID_QUERY);
+    CHECK(hits == NULL);
+
+    lux_index_free(index);
+}
+
+static void search_query_offset_counts_bytes_not_code_points(void) {
+    lux_index* index = notes();
+    lux_hits* hits = NULL;
+    size_t offset = 99;
+
+    CHECK_STATUS(lux_index_search_query(index, STR("caf\xc3\xa9 (train"), 10, &hits, &offset), LUX_INVALID_QUERY);
+    CHECK(offset == 6);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, STR("\xe6\x97\xa5\xe6\x9c\xac \"train"), 10, &hits, &offset),
+                 LUX_INVALID_QUERY);
+    CHECK(offset == 7);
+
+    lux_index_free(index);
+}
+
+static void search_query_offset_is_zero_unless_the_query_is_invalid(void) {
+    lux_index* index = notes();
+    lux_index* plain = phrase_notes(0);
+    lux_hits* hits = NULL;
+    size_t offset = 99;
+
+    CHECK_STATUS(lux_index_search_query(index, STR("book"), 10, &hits, &offset), LUX_OK);
+    CHECK(offset == 0);
+    lux_hits_free(hits);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, STR("zzzz"), 10, &hits, &offset), LUX_OK);
+    CHECK(offset == 0);
+    lux_hits_free(hits);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(NULL, STR("book"), 10, &hits, &offset), LUX_INVALID_ARGUMENT);
+    CHECK(offset == 0);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, NULL, 1, 10, &hits, &offset), LUX_INVALID_ARGUMENT);
+    CHECK(offset == 0);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(index, STR("book"), 10, NULL, &offset), LUX_INVALID_ARGUMENT);
+    CHECK(offset == 0);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_search_query(plain, STR("fox \"quick brown\""), 10, &hits, &offset), LUX_INVALID_QUERY);
+    CHECK(offset == 0);
+
+    lux_index_free(plain);
     lux_index_free(index);
 }
 
@@ -565,16 +646,16 @@ static void phrase_queries_need_positions(void) {
     lux_index* positional = phrase_notes(1);
     lux_hits* hits = NULL;
 
-    CHECK_STATUS(lux_index_search_query(plain, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(plain, STR("\"quick brown\""), 10, &hits, NULL), LUX_INVALID_QUERY);
     CHECK(hits == NULL);
-    CHECK_STATUS(lux_index_search_query(plain, STR("wi-fi"), 10, &hits), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(plain, STR("wi-fi"), 10, &hits, NULL), LUX_INVALID_QUERY);
 
-    CHECK_STATUS(lux_index_search_query(positional, STR("\"quick brown\""), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(positional, STR("\"quick brown\""), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 1);
     CHECK(hit_is(hits, 0, "fox"));
     lux_hits_free(hits);
 
-    CHECK_STATUS(lux_index_search_query(positional, STR("\"brown quick\""), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(positional, STR("\"brown quick\""), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 0);
     lux_hits_free(hits);
 
@@ -589,8 +670,8 @@ static void create_with_a_null_config_uses_the_defaults(void) {
     CHECK_STATUS(lux_index_create_with(NULL, &index), LUX_OK);
     CHECK(index != NULL);
     CHECK_STATUS(lux_index_add(index, STR("fox"), STR("Animals"), STR("the quick brown fox")), LUX_OK);
-    CHECK_STATUS(lux_index_search_query(index, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
-    CHECK_STATUS(lux_index_search_query(index, STR("quick"), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(index, STR("\"quick brown\""), 10, &hits, NULL), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(index, STR("quick"), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 1);
 
     lux_hits_free(hits);
@@ -612,16 +693,16 @@ static void positions_survive_save_and_load_with_a_config(void) {
 
     config.positions = 1;
     CHECK_STATUS(lux_index_load_with(path, strlen(path), &config, &with_positions), LUX_OK);
-    CHECK_STATUS(lux_index_search_query(with_positions, STR("\"quick brown\""), 10, &hits), LUX_OK);
+    CHECK_STATUS(lux_index_search_query(with_positions, STR("\"quick brown\""), 10, &hits, NULL), LUX_OK);
     CHECK(lux_hits_count(hits) == 1);
     lux_hits_free(hits);
 
     config.positions = 0;
     CHECK_STATUS(lux_index_load_with(path, strlen(path), &config, &without_positions), LUX_OK);
-    CHECK_STATUS(lux_index_search_query(without_positions, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(without_positions, STR("\"quick brown\""), 10, &hits, NULL), LUX_INVALID_QUERY);
 
     CHECK_STATUS(lux_index_load_with(path, strlen(path), NULL, &defaulted), LUX_OK);
-    CHECK_STATUS(lux_index_search_query(defaulted, STR("\"quick brown\""), 10, &hits), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_search_query(defaulted, STR("\"quick brown\""), 10, &hits, NULL), LUX_INVALID_QUERY);
 
     lux_index_free(original);
     lux_index_free(with_positions);
@@ -638,16 +719,16 @@ static void snippet_marks_what_search_matched(void) {
     CHECK(text_is(text, "a book about how <em>Lucene</em> <em>ranks</em> search results"));
     lux_text_free(text);
 
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucne"), NULL, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucne"), NULL, &text, NULL), LUX_OK);
     CHECK(text_is(text, "a book about how Lucene ranks search results"));
     lux_text_free(text);
 
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("+book OR ranks"), NULL, &text),
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("+book OR ranks"), NULL, &text, NULL),
                  LUX_OK);
     CHECK(text_is(text, "a <em>book</em> about how Lucene <em>ranks</em> search results"));
     lux_text_free(text);
 
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("title:book"), NULL, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("title:book"), NULL, &text, NULL), LUX_OK);
     CHECK(text_is(text, "a book about how Lucene ranks search results"));
     lux_text_free(text);
 
@@ -665,7 +746,7 @@ static void snippet_options_override_markers_and_length(void) {
     options.start_marker_length = 1;
     options.end_marker = "]";
     options.end_marker_length = 1;
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text, NULL), LUX_OK);
     CHECK(text_is(text, "a book about how [Lucene] ranks search results"));
     lux_text_free(text);
 
@@ -673,7 +754,7 @@ static void snippet_options_override_markers_and_length(void) {
     options.start_marker_length = 2;
     options.end_marker = NULL;
     options.end_marker_length = 0;
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text, NULL), LUX_OK);
     CHECK(text_is(text, "a book about how <<Lucene</em> ranks search results"));
     lux_text_free(text);
 
@@ -681,12 +762,12 @@ static void snippet_options_override_markers_and_length(void) {
     options.start_marker_length = 0;
     options.end_marker = "";
     options.end_marker_length = 0;
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text, NULL), LUX_OK);
     CHECK(text_is(text, "a book about how Lucene ranks search results"));
     lux_text_free(text);
 
     memset(&options, 0, sizeof options);
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("body"), STR("lucene"), &options, &text, NULL), LUX_OK);
     CHECK(text_is(text, "a book about how <em>Lucene</em> ranks search results"));
     lux_text_free(text);
 
@@ -716,7 +797,7 @@ static void snippet_options_set_the_ellipsis_and_the_length(void) {
     options.length = 60;
     options.ellipsis = "~";
     options.ellipsis_length = 1;
-    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text, NULL), LUX_OK);
     CHECK(lux_text_length(text) < 160);
     CHECK(lux_text_data(text)[0] == '~');
     CHECK(strstr(lux_text_data(text), "<em>needle</em>") != NULL);
@@ -725,14 +806,14 @@ static void snippet_options_set_the_ellipsis_and_the_length(void) {
 
     options.ellipsis = "";
     options.ellipsis_length = 0;
-    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text, NULL), LUX_OK);
     CHECK(strstr(lux_text_data(text), "<em>needle</em>") != NULL);
     CHECK(lux_text_data(text)[0] != '~');
     CHECK(lux_text_data(text)[0] != '.');
     lux_text_free(text);
 
     options.ellipsis = NULL;
-    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text), LUX_OK);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("long"), STR("body"), STR("needle"), &options, &text, NULL), LUX_OK);
     CHECK(strncmp(lux_text_data(text), "...", 3) == 0);
     lux_text_free(text);
 
@@ -746,9 +827,9 @@ static void snippet_reports_unknown_keys_and_fields_as_not_found(void) {
     CHECK_STATUS(lux_index_snippet(index, STR("missing"), STR("body"), STR("book"), NULL, &text), LUX_NOT_FOUND);
     CHECK(text == NULL);
     CHECK_STATUS(lux_index_snippet(index, STR("reading"), STR("author"), STR("book"), NULL, &text), LUX_NOT_FOUND);
-    CHECK_STATUS(lux_index_snippet_query(index, STR("missing"), STR("body"), STR("book"), NULL, &text), LUX_NOT_FOUND);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("missing"), STR("body"), STR("book"), NULL, &text, NULL), LUX_NOT_FOUND);
     CHECK(text == NULL);
-    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("author"), STR("book"), NULL, &text), LUX_NOT_FOUND);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("reading"), STR("author"), STR("book"), NULL, &text, NULL), LUX_NOT_FOUND);
 
     lux_index_free(index);
 }
@@ -757,12 +838,69 @@ static void snippet_query_reports_a_bad_query_as_invalid_query(void) {
     lux_index* plain = phrase_notes(0);
     lux_text* text = (lux_text*)plain;
 
-    CHECK_STATUS(lux_index_snippet_query(plain, STR("fox"), STR("body"), STR("(quick"), NULL, &text), LUX_INVALID_QUERY);
+    CHECK_STATUS(lux_index_snippet_query(plain, STR("fox"), STR("body"), STR("(quick"), NULL, &text, NULL), LUX_INVALID_QUERY);
     CHECK(text == NULL);
-    CHECK_STATUS(lux_index_snippet_query(plain, STR("fox"), STR("body"), STR("\"quick brown\""), NULL, &text),
+    CHECK_STATUS(lux_index_snippet_query(plain, STR("fox"), STR("body"), STR("\"quick brown\""), NULL, &text, NULL),
                  LUX_INVALID_QUERY);
 
     lux_index_free(plain);
+}
+
+static void snippet_query_reports_the_byte_offset_of_a_parse_failure(void) {
+    lux_index* index = phrase_notes(1);
+    lux_text* text = NULL;
+    size_t offset = 99;
+
+    CHECK_STATUS(lux_index_snippet_query(index, STR("fox"), STR("body"), STR("tomato (garden"), NULL, &text, &offset),
+                 LUX_INVALID_QUERY);
+    CHECK(text == NULL);
+    CHECK(offset == 7);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_snippet_query(index, STR("fox"), STR("body"), STR("caf\xc3\xa9 \"quick"), NULL, &text,
+                                         &offset),
+                 LUX_INVALID_QUERY);
+    CHECK(offset == 6);
+
+    CHECK_STATUS(lux_index_snippet_query(index, STR("fox"), STR("body"), STR("(quick"), NULL, &text, NULL),
+                 LUX_INVALID_QUERY);
+
+    lux_index_free(index);
+}
+
+static void snippet_query_offset_is_zero_unless_the_query_is_invalid(void) {
+    lux_index* positional = phrase_notes(1);
+    lux_index* plain = phrase_notes(0);
+    lux_text* text = NULL;
+    size_t offset = 99;
+
+    CHECK_STATUS(lux_index_snippet_query(positional, STR("fox"), STR("body"), STR("quick"), NULL, &text, &offset),
+                 LUX_OK);
+    CHECK(offset == 0);
+    lux_text_free(text);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_snippet_query(positional, STR("missing"), STR("body"), STR("quick"), NULL, &text, &offset),
+                 LUX_NOT_FOUND);
+    CHECK(offset == 0);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_snippet_query(NULL, STR("fox"), STR("body"), STR("quick"), NULL, &text, &offset),
+                 LUX_INVALID_ARGUMENT);
+    CHECK(offset == 0);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_snippet_query(positional, STR("fox"), STR("body"), STR("quick"), NULL, NULL, &offset),
+                 LUX_INVALID_ARGUMENT);
+    CHECK(offset == 0);
+
+    offset = 99;
+    CHECK_STATUS(lux_index_snippet_query(plain, STR("fox"), STR("body"), STR("\"quick brown\""), NULL, &text, &offset),
+                 LUX_INVALID_QUERY);
+    CHECK(offset == 0);
+
+    lux_index_free(plain);
+    lux_index_free(positional);
 }
 
 static void new_functions_reject_null_arguments(void) {
@@ -782,12 +920,12 @@ static void new_functions_reject_null_arguments(void) {
     CHECK_STATUS(lux_index_load_with("x", 0, &config, &created), LUX_INVALID_ARGUMENT);
     CHECK_STATUS(lux_index_load_with("x", 1, &config, NULL), LUX_INVALID_ARGUMENT);
 
-    CHECK_STATUS(lux_index_search_query(NULL, STR("q"), 10, &hits), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_search_query(NULL, STR("q"), 10, &hits, NULL), LUX_INVALID_ARGUMENT);
     CHECK(hits == NULL);
     hits = (lux_hits*)index;
-    CHECK_STATUS(lux_index_search_query(index, NULL, 1, 10, &hits), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_search_query(index, NULL, 1, 10, &hits, NULL), LUX_INVALID_ARGUMENT);
     CHECK(hits == NULL);
-    CHECK_STATUS(lux_index_search_query(index, STR("q"), 10, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_search_query(index, STR("q"), 10, NULL, NULL), LUX_INVALID_ARGUMENT);
 
     CHECK_STATUS(lux_index_snippet(NULL, STR("k"), STR("body"), STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
     CHECK(text == NULL);
@@ -797,11 +935,11 @@ static void new_functions_reject_null_arguments(void) {
     CHECK_STATUS(lux_index_snippet(index, STR("k"), STR("body"), NULL, 1, NULL, &text), LUX_INVALID_ARGUMENT);
     CHECK_STATUS(lux_index_snippet(index, STR("k"), STR("body"), STR("q"), NULL, NULL), LUX_INVALID_ARGUMENT);
 
-    CHECK_STATUS(lux_index_snippet_query(NULL, STR("k"), STR("body"), STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
-    CHECK_STATUS(lux_index_snippet_query(index, NULL, 1, STR("body"), STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
-    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), NULL, 1, STR("q"), NULL, &text), LUX_INVALID_ARGUMENT);
-    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), STR("body"), NULL, 1, NULL, &text), LUX_INVALID_ARGUMENT);
-    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), STR("body"), STR("q"), NULL, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(NULL, STR("k"), STR("body"), STR("q"), NULL, &text, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, NULL, 1, STR("body"), STR("q"), NULL, &text, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), NULL, 1, STR("q"), NULL, &text, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), STR("body"), NULL, 1, NULL, &text, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_query(index, STR("k"), STR("body"), STR("q"), NULL, NULL, NULL), LUX_INVALID_ARGUMENT);
 
     lux_index_free(index);
 }
@@ -844,6 +982,9 @@ int main(void) {
         {"save_and_load_reject_null_and_empty_paths", save_and_load_reject_null_and_empty_paths},
         {"search_query_understands_fields_and_boolean_operators", search_query_understands_fields_and_boolean_operators},
         {"search_query_reports_a_parse_failure_as_invalid_query", search_query_reports_a_parse_failure_as_invalid_query},
+        {"search_query_reports_the_byte_offset_of_a_parse_failure", search_query_reports_the_byte_offset_of_a_parse_failure},
+        {"search_query_offset_counts_bytes_not_code_points", search_query_offset_counts_bytes_not_code_points},
+        {"search_query_offset_is_zero_unless_the_query_is_invalid", search_query_offset_is_zero_unless_the_query_is_invalid},
         {"phrase_queries_need_positions", phrase_queries_need_positions},
         {"create_with_a_null_config_uses_the_defaults", create_with_a_null_config_uses_the_defaults},
         {"positions_survive_save_and_load_with_a_config", positions_survive_save_and_load_with_a_config},
@@ -852,6 +993,8 @@ int main(void) {
         {"snippet_options_set_the_ellipsis_and_the_length", snippet_options_set_the_ellipsis_and_the_length},
         {"snippet_reports_unknown_keys_and_fields_as_not_found", snippet_reports_unknown_keys_and_fields_as_not_found},
         {"snippet_query_reports_a_bad_query_as_invalid_query", snippet_query_reports_a_bad_query_as_invalid_query},
+        {"snippet_query_reports_the_byte_offset_of_a_parse_failure", snippet_query_reports_the_byte_offset_of_a_parse_failure},
+        {"snippet_query_offset_is_zero_unless_the_query_is_invalid", snippet_query_offset_is_zero_unless_the_query_is_invalid},
         {"new_functions_reject_null_arguments", new_functions_reject_null_arguments},
         {"every_status_has_a_message", every_status_has_a_message},
     };

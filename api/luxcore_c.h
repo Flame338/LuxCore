@@ -71,13 +71,14 @@ LUX_API lux_status lux_index_stored(const lux_index* index, const char* key, siz
 LUX_API lux_status lux_index_search(const lux_index* index, const char* query, size_t query_length, size_t limit,
                                     lux_hits** out);
 LUX_API lux_status lux_index_search_query(const lux_index* index, const char* query, size_t query_length,
-                                          size_t limit, lux_hits** out);
+                                          size_t limit, lux_hits** out, size_t* error_offset);
 LUX_API lux_status lux_index_snippet(const lux_index* index, const char* key, size_t key_length, const char* field,
                                      size_t field_length, const char* query, size_t query_length,
                                      const lux_snippet_options* options, lux_text** out);
 LUX_API lux_status lux_index_snippet_query(const lux_index* index, const char* key, size_t key_length,
                                            const char* field, size_t field_length, const char* query,
-                                           size_t query_length, const lux_snippet_options* options, lux_text** out);
+                                           size_t query_length, const lux_snippet_options* options, lux_text** out,
+                                           size_t* error_offset);
 LUX_API lux_status lux_index_suggest(const lux_index* index, const char* query, size_t query_length, size_t limit,
                                      lux_strings** out);
 
