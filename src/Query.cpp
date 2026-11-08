@@ -5,16 +5,6 @@
 
 namespace {
 
-ScoredDocs sorted_by_doc(const DocScores& scores) {
-    ScoredDocs docs;
-    docs.reserve(scores.size());
-    for (const auto& [doc_id, score] : scores) {
-        docs.push_back({doc_id, score});
-    }
-    std::ranges::sort(docs, {}, &ScoredDoc::doc_id);
-    return docs;
-}
-
 ScoredDocs intersect(const ScoredDocs& a, const ScoredDocs& b) {
     ScoredDocs result;
     auto left = a.begin();
@@ -109,8 +99,7 @@ std::vector<std::string_view> fields_of(const QueryContext& context, const std::
 
 ScoredDocs TermQuery::execute(const QueryContext& context) const {
     const Scope scope = context.scope(field);
-    const TermScorer scorer(scope, context.index, context.scoring);
-    return sorted_by_doc(scorer.score(term));
+    return TermScorer(scope, context.scoring).score(term);
 }
 
 void TermQuery::add_leaves(QueryLeaves& leaves) const {
@@ -192,14 +181,13 @@ ScoredDocs PhraseQuery::execute(const QueryContext& context) const {
     }
 
     const Scope scope = context.scope(field);
-    const TermScorer scorer(scope, context.index, context.scoring);
+    const TermScorer scorer(scope, context.scoring);
 
-    double phrase_idf = 0.0;
+    std::vector<std::string> words;
     for (const PhraseTerm& phrase_term : terms) {
-        phrase_idf += scorer.idf(phrase_term.term);
+        words.push_back(phrase_term.term);
     }
-
-    DocScores weighted_tfs;
+    TermScorer::PhraseTally tally = scorer.phrase(words);
     for (const std::string_view field_name : fields_of(context, field)) {
         std::vector<const PostingList*> lists;
         for (const PhraseTerm& phrase_term : terms) {
@@ -216,8 +204,6 @@ ScoredDocs PhraseQuery::execute(const QueryContext& context) const {
         const std::size_t lead = std::ranges::min_element(lists, {}, [](const PostingList* list) {
                                      return list->postings.size();
                                  }) - lists.begin();
-        const double boost = context.boosts.get(field_name);
-        const double average_length = scorer.average_length(field_name);
         std::vector<std::span<const std::uint32_t>> positions(lists.size());
 
         for (const Posting& candidate : lists[lead]->postings) {
@@ -235,17 +221,10 @@ ScoredDocs PhraseQuery::execute(const QueryContext& context) const {
             }
             const int frequency = phrase_frequency(terms, positions);
             if (frequency > 0) {
-                weighted_tfs[candidate.doc_id] +=
-                    scorer.weighted_tf(field_name, candidate.doc_id, frequency, boost, average_length);
+                tally.add(field_name, candidate.doc_id, frequency);
             }
         }
     }
 
-    ScoredDocs docs;
-    docs.reserve(weighted_tfs.size());
-    for (const auto& [doc_id, tf] : weighted_tfs) {
-        docs.push_back({doc_id, scorer.combine(phrase_idf, tf)});
-    }
-    std::ranges::sort(docs, {}, &ScoredDoc::doc_id);
-    return docs;
+    return tally.scores();
 }

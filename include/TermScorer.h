@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FuzzyIndex.h"
 #include "InvertedIndex.h"
 #include "Scoring.h"
 
@@ -11,7 +12,12 @@
 #include <unordered_map>
 #include <vector>
 
-using DocScores = std::unordered_map<int, double>;
+struct ScoredDoc {
+    int doc_id;
+    double score;
+};
+
+using ScoredDocs = std::vector<ScoredDoc>;
 
 struct Scope {
     const InvertedIndex& index;
@@ -44,7 +50,6 @@ struct Scope {
     }
 };
 
-double idf_for(const Scoring& scoring, int total_docs, std::size_t doc_freq);
 bool ranks_before(const SearchHit& a, const SearchHit& b);
 
 class TopKCollector {
@@ -61,19 +66,41 @@ public:
 
 class TermScorer {
 private:
+    using DocScores = std::unordered_map<int, double>;
+
     const Scope& scope;
-    const InvertedIndex& index;
     const Scoring& scoring;
     int total_docs;
 
-public:
-    TermScorer(const Scope& scope, const InvertedIndex& index, const Scoring& scoring)
-        : scope(scope), index(index), scoring(scoring), total_docs(scope.documents()) {}
-
-    DocScores score(const std::string& term) const;
-
-    double idf(const std::string& term) const;
-    double average_length(std::string_view field) const;
+    double idf(std::size_t doc_freq) const;
+    double term_idf(const std::string& term) const;
+    double weighted_tf(std::string_view field, int doc_id, double frequency) const;
     double weighted_tf(std::string_view field, int doc_id, double frequency, double boost, double average_length) const;
-    double combine(double idf, double weighted_tf) const;
+    double average_length(std::string_view field) const;
+    double combine(double term_idf, double tf) const;
+    DocScores score_by_doc(const std::string& term) const;
+
+public:
+    class PhraseTally {
+    private:
+        friend class TermScorer;
+
+        const TermScorer& scorer;
+        double idf;
+        DocScores weighted_tfs;
+
+        PhraseTally(const TermScorer& scorer, double idf) : scorer(scorer), idf(idf) {}
+
+    public:
+        void add(std::string_view field, int doc_id, int frequency);
+        ScoredDocs scores() const;
+    };
+
+    TermScorer(const Scope& scope, const Scoring& scoring)
+        : scope(scope), scoring(scoring), total_docs(scope.documents()) {}
+
+    ScoredDocs score(const std::string& term) const;
+    ScoredDocs score_prefix(const std::string& term, const std::vector<std::string>& completions) const;
+    ScoredDocs score_fuzzy(const std::vector<FuzzyMatch>& candidates, const ScoredDocs& exact) const;
+    PhraseTally phrase(const std::vector<std::string>& terms) const;
 };

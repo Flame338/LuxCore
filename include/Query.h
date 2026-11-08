@@ -10,13 +10,6 @@
 #include <string>
 #include <vector>
 
-struct ScoredDoc {
-    int doc_id;
-    double score;
-};
-
-using ScoredDocs = std::vector<ScoredDoc>;
-
 struct QueryContext {
     const InvertedIndex& index;
     const FieldBoosts& boosts;
