@@ -10,85 +10,127 @@ FuzzyIndex::FuzzyIndex(const std::vector<std::string>& source_terms) {
     }
 }
 
-std::size_t FuzzyIndex::new_node() {
+std::uint32_t FuzzyIndex::new_node(char32_t code_point) {
     if (free_nodes.empty()) {
-        nodes.emplace_back();
-        return nodes.size() - 1;
+        nodes.push_back(Node{code_point});
+        return static_cast<std::uint32_t>(nodes.size() - 1);
     }
-    const std::size_t node = free_nodes.back();
+    const std::uint32_t node = free_nodes.back();
     free_nodes.pop_back();
-    nodes[node] = Node{};
+    nodes[node] = Node{code_point};
     return node;
 }
 
-std::size_t FuzzyIndex::find_node(const std::vector<char32_t>& code_points) const {
-    std::size_t node = 0;
-    for (const char32_t code_point : code_points) {
-        const auto child = nodes[node].children.find(code_point);
-        if (child == nodes[node].children.end()) {
-            return no_term;
+std::uint32_t FuzzyIndex::find_child(std::uint32_t parent, char32_t code_point) const {
+    for (std::uint32_t child = nodes[parent].first_child; child != none; child = nodes[child].next_sibling) {
+        if (nodes[child].code_point >= code_point) {
+            return nodes[child].code_point == code_point ? child : none;
         }
-        node = child->second;
+    }
+    return none;
+}
+
+std::uint32_t FuzzyIndex::child_or_insert(std::uint32_t parent, char32_t code_point) {
+    std::uint32_t previous = none;
+    std::uint32_t child = nodes[parent].first_child;
+    while (child != none && nodes[child].code_point < code_point) {
+        previous = child;
+        child = nodes[child].next_sibling;
+    }
+    if (child != none && nodes[child].code_point == code_point) {
+        return child;
+    }
+    const std::uint32_t created = new_node(code_point);
+    nodes[created].next_sibling = child;
+    if (previous == none) {
+        nodes[parent].first_child = created;
+    } else {
+        nodes[previous].next_sibling = created;
+    }
+    return created;
+}
+
+void FuzzyIndex::unlink_child(std::uint32_t parent, std::uint32_t child) {
+    if (nodes[parent].first_child == child) {
+        nodes[parent].first_child = nodes[child].next_sibling;
+        return;
+    }
+    std::uint32_t previous = nodes[parent].first_child;
+    while (nodes[previous].next_sibling != child) {
+        previous = nodes[previous].next_sibling;
+    }
+    nodes[previous].next_sibling = nodes[child].next_sibling;
+}
+
+std::uint32_t FuzzyIndex::find_node(const std::vector<char32_t>& code_points) const {
+    std::uint32_t node = 0;
+    for (const char32_t code_point : code_points) {
+        node = find_child(node, code_point);
+        if (node == none) {
+            return none;
+        }
     }
     return node;
 }
 
 void FuzzyIndex::add(std::string_view term) {
-    std::size_t node = 0;
+    std::uint32_t node = 0;
     for (const char32_t code_point : to_code_points(term)) {
-        auto child = nodes[node].children.find(code_point);
-        if (child == nodes[node].children.end()) {
-            const std::size_t created = new_node();
-            child = nodes[node].children.emplace(code_point, created).first;
-        }
-        node = child->second;
+        node = child_or_insert(node, code_point);
     }
 
-    if (nodes[node].term_id == no_term) {
-        nodes[node].term_id = terms.size();
+    if (nodes[node].term_id == none) {
+        nodes[node].term_id = static_cast<std::uint32_t>(terms.size());
         terms.emplace_back(term);
     }
 }
 
 void FuzzyIndex::remove(std::string_view term) {
-    const std::vector<char32_t> code_points = to_code_points(term);
-    const std::size_t node = find_node(code_points);
-    if (node == no_term || nodes[node].term_id == no_term) {
+    std::vector<std::uint32_t> path{0};
+    for (const char32_t code_point : to_code_points(term)) {
+        const std::uint32_t child = find_child(path.back(), code_point);
+        if (child == none) {
+            return;
+        }
+        path.push_back(child);
+    }
+
+    const std::uint32_t node = path.back();
+    if (nodes[node].term_id == none) {
         return;
     }
 
-    const std::size_t id = nodes[node].term_id;
-    nodes[node].term_id = no_term;
+    const std::uint32_t id = nodes[node].term_id;
+    nodes[node].term_id = none;
     if (id != terms.size() - 1) {
         terms[id] = std::move(terms.back());
         nodes[find_node(to_code_points(terms[id]))].term_id = id;
     }
     terms.pop_back();
 
-    std::size_t current = node;
-    for (std::size_t depth = code_points.size(); depth > 0; depth--) {
-        if (!nodes[current].children.empty() || nodes[current].term_id != no_term) {
+    for (std::size_t depth = path.size() - 1; depth > 0; depth--) {
+        const std::uint32_t current = path[depth];
+        if (nodes[current].first_child != none || nodes[current].term_id != none) {
             break;
         }
-        const std::size_t parent = find_node({code_points.begin(), code_points.begin() + (depth - 1)});
-        nodes[parent].children.erase(code_points[depth - 1]);
+        unlink_child(path[depth - 1], current);
         free_nodes.push_back(current);
-        current = parent;
     }
 }
 
-void FuzzyIndex::collect(std::size_t node, std::size_t depth, const std::vector<char32_t>& query,
+void FuzzyIndex::collect(std::uint32_t node, std::size_t depth, const std::vector<char32_t>& query,
                          std::vector<std::size_t>& rows, std::size_t max_distance,
                          std::vector<FuzzyMatch>& out) const {
     const std::size_t width = query.size() + 1;
     const std::size_t* row = rows.data() + depth * width;
     std::size_t* next = rows.data() + (depth + 1) * width;
 
-    if (nodes[node].term_id != no_term && row[width - 1] <= max_distance) {
+    if (nodes[node].term_id != none && row[width - 1] <= max_distance) {
         out.push_back({terms[nodes[node].term_id], row[width - 1]});
     }
 
-    for (const auto& [code_point, child] : nodes[node].children) {
+    for (std::uint32_t child = nodes[node].first_child; child != none; child = nodes[child].next_sibling) {
+        const char32_t code_point = nodes[child].code_point;
         next[0] = row[0] + 1;
         std::size_t row_minimum = next[0];
         for (std::size_t j = 1; j < width; j++) {

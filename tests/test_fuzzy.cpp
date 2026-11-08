@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <random>
+#include <set>
 
 namespace {
 
@@ -165,4 +166,42 @@ TEST(fuzzy_index_agrees_with_a_brute_force_scan) {
                      describe(brute_force(terms, query, max_distance)));
         }
     }
+}
+
+TEST(fuzzy_index_agrees_with_a_brute_force_scan_after_adds_and_removes) {
+    std::mt19937 rng(7);
+    FuzzyIndex index;
+    std::set<std::string> live;
+
+    for (int step = 0; step < 900; step++) {
+        const std::string term = random_term(rng, 6);
+        if (rng() % 3 == 0) {
+            index.remove(term);
+            live.erase(term);
+        } else {
+            index.add(term);
+            live.insert(term);
+        }
+
+        if (step % 30 == 0) {
+            const std::vector<std::string> terms(live.begin(), live.end());
+            CHECK_EQ(index.size(), terms.size());
+            for (int round = 0; round < 6; round++) {
+                const std::string query = random_term(rng, 6);
+                for (std::size_t max_distance = 0; max_distance <= 2; max_distance++) {
+                    CHECK_EQ(describe(index.candidates(query, max_distance)),
+                             describe(brute_force(terms, query, max_distance)));
+                }
+            }
+        }
+    }
+
+    for (const std::string& term : std::vector<std::string>(live.begin(), live.end())) {
+        index.remove(term);
+    }
+    CHECK_EQ(index.size(), static_cast<std::size_t>(0));
+    CHECK_EQ(describe(index.candidates("abc", 2)), std::string(""));
+
+    index.add("abc");
+    CHECK_EQ(describe(index.candidates("abd", 1)), std::string("abc:1,"));
 }
