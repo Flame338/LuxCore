@@ -62,7 +62,7 @@ The public `Index` uses no stop words, so it never reads a file from the working
 
 ### Size and build time
 
-`make stats` rebuilds the release library and the example from scratch and prints the build time and file sizes. CI runs it on g++ release and adds the numbers to the job summary. On the developer machine (g++ 16.1 on Windows, one job) it measured 16.6 s, 528 KB for `libluxcore.a` and 2.9 MB for the statically linked example executable.
+`make stats` rebuilds the release library and the example from scratch and prints the build time and file sizes. CI runs it on g++ release and adds the numbers to the job summary. On the developer machine (g++ 16.1 on Windows, one job) it measured 20.3 s (three runs, 19.9 to 20.5 s), 733 KB for `libluxcore.a` and 3.2 MB for the statically linked example executable.
 
 ## Persistence
 
@@ -111,9 +111,9 @@ Measured on an Intel Core i7-13700K, Windows 11, g++ 16.1.0 with `-O2 -DNDEBUG`,
 
 | Step | Time | Note |
 | --- | --- | --- |
-| Build the index from documents | 2.63 to 2.96 s | analysis and indexing of 100,000 documents |
-| Save | 66 to 102 ms | 37.3 MB file |
-| Load | 211 to 244 ms | 11.5 to 13.8 times faster than building |
+| Build the index from documents | 2.40 to 2.42 s | analysis and indexing of 100,000 documents |
+| Save | 66 to 69 ms | 37.3 MB file |
+| Load | 201 to 217 ms | 11.1 to 12.1 times faster than building |
 
 In one profiled run the 220 ms of a load split into about 25 ms for the stored documents, 11 ms for the keys, and 166 ms for the postings. Of the postings time, about 54 ms is parsing, 39 ms builds the per-document term entries, 33 ms fills their term lists, 15 ms builds the fuzzy trie, and the rest merges the per-field lists into the combined map. The reading of the file is the remaining 20 ms.
 
@@ -152,8 +152,8 @@ Concurrent reads of an unchanged `Indexer` and `Searcher` were safe before the l
 
 ### Trade-offs
 
-- A search holds the shared lock for its whole run, fuzzy matching included. A writer waits for it, about 2 ms at the 99th percentile on the 100,000 document corpus below.
-- The lock is a `std::mutex` and a `std::condition_variable`. Every lock and unlock takes that mutex for a moment, and a hand-off to a waiting thread costs a wake-up. A reader and a writer that never pause alternate, one search per write. In the tight loop below the median keystroke rises from about 0.23 ms to 0.42 ms, and the writer adds 2,900 to 3,300 documents per second. One typist and a bulk indexer that reads and parses between adds do not notice.
+- A search holds the shared lock for its whole run, fuzzy matching included. A writer waits for it, about 1.1 to 1.5 ms at the 99th percentile on the 100,000 document corpus below.
+- The lock is a `std::mutex` and a `std::condition_variable`. Every lock and unlock takes that mutex for a moment, and a hand-off to a waiting thread costs a wake-up. A reader and a writer that never pause alternate, one search per write. In the tight loop below the median keystroke rises from about 0.15 to 0.18 ms to about 0.31 to 0.34 ms, and the writer adds about 4,500 documents per second. One typist and a bulk indexer that reads and parses between adds do not notice.
 - `FairSharedMutex` is why a bulk indexer cannot stall the UI. The platform's `std::shared_mutex` could. Glibc's read-write lock prefers readers, so readers that search without a pause starve a writer. The Windows runtime used here (winpthreads in g++ 16.1) lets a writer that retakes the lock at once keep it, so a waiting reader can wait many writes. The first lock of a fresh winpthreads `std::shared_mutex` also raced when several threads made it together. `FairSharedMutex` has no such first-use step, so the `Index` constructor does not need to take the lock once.
 - `std::thread`, `std::mutex` and `std::condition_variable` need `-pthread` when linking on Linux. The Makefile passes it to every link rule. Add flags with `EXTRA_LDFLAGS`.
 
@@ -161,21 +161,36 @@ Concurrent reads of an unchanged `Indexer` and `Searcher` were safe before the l
 
 `make MODE=release bench ARGS="--indexing 1"` builds the 100,000 document corpus a second time as a `luxcore::Index`, then types the same keystroke list three times. Each keystroke is one `search` plus one `suggest`. The three measurements are idle, while one background thread adds documents, and idle again on the index that the writer grew. The writer adds a new document, removes the oldest one it added after every 10th add, and pauses `--writer_pause_us` microseconds (default 200, 0 is a tight loop). The bench prints how many documents the writer added, checks that the final size equals the start plus adds minus removes, and exits non-zero if it does not.
 
-`Index` uses no stop words, BM25 and fuzzy matching, so it is slower than the `Searcher` baseline that the bench prints first (`METRIC p99_us` 345 to 351 µs over three runs, with stop words, tf-idf and no fuzzing). Compare the rows within one run.
+`Index` uses no stop words, BM25 and fuzzy matching, so it is slower than the `Searcher` baseline that the bench prints first (`METRIC p99_us` 181 to 200 µs over three runs, with stop words, tf-idf and no fuzzing). Compare the rows within one run.
 
 Measured on an Intel Core i7-13700K, Windows 11, g++ 16.1.0 with `-O2 -DNDEBUG`, three runs each. The last column is the 99th percentile while writing divided by the idle one. The index grows during the measurement, and the idle-again column shows what growth alone costs.
 
 | Writer | Documents added during the run | Idle p99 | While writing p99 | Idle again p99 | Ratio |
 | --- | --- | --- | --- | --- | --- |
-| Pause 200 µs (default) | 8,456 to 8,645 | 2.11 to 2.27 ms | 2.33 to 2.42 ms | 2.24 to 2.57 ms | 1.03 to 1.11 |
-| Pause 50 µs | 11,179 to 11,333 | 2.18 to 2.25 ms | 2.38 to 2.52 ms | 2.37 to 2.43 ms | 1.06 to 1.14 |
-| Tight loop, pause 0 | 827 to 835 | 2.35 to 2.49 ms | 2.46 to 2.68 ms | 2.32 to 2.43 ms | 1.04 to 1.11 |
+| Pause 200 µs (default) | 7,999 to 8,406 | 1.29 to 1.42 ms | 1.34 to 1.48 ms | 1.41 to 1.47 ms | 0.9 to 1.1 |
+| Pause 50 µs | 10,936 to 11,020 | 1.40 to 1.46 ms | 1.44 to 1.54 ms | 1.48 to 1.49 ms | 1.0 to 1.1 |
+| Tight loop, pause 0 | 833 to 855 | 1.13 to 1.47 ms | 1.42 to 1.55 ms | 1.05 to 1.32 ms | 1.0 to 1.3 |
 
-The tight loop rows use `--passes 1 --queries 30`, 458 keystrokes, which take 0.3 s. The writer adds one document per search there, because the reader never pauses and the lock hands over in turn. The median keystroke takes 0.42 to 0.44 ms while the writer runs, against 0.23 to 0.25 ms idle. The paced writers add about as many documents as they did under the platform lock.
+The tight loop rows use `--passes 1 --queries 30`, 458 keystrokes, which take about 0.2 s. The writer adds one document per search there, because the reader never pauses and the lock hands over in turn. The median keystroke takes 0.31 to 0.34 ms while the writer runs, against 0.15 to 0.18 ms idle. The paced writers add about as many documents as they did under the platform lock.
 
 The first version of the lock was the platform's `std::shared_mutex`. With the same tight loop on this machine it gave a p99 of 99.9 to 156.5 ms while writing against 2.18 to 2.28 ms idle (ratio 45.8 to 71.1) and a median keystroke of 21 to 30 ms, while the writer added 122,620 to 163,825 documents and the index doubled. A reader that arrived while the writer kept releasing and retaking the lock waited many writes. That is why the library has its own lock.
 
-On Ubuntu 24.04 under WSL2 (g++ 13.3, glibc 2.39, same CPU), the tight loop gave p99 ratios of 1.12, 1.02 and 1.26 in three runs, and the writer added 834 to 866 documents in the 0.3 s of the measurement.
+Before the latency work, on Ubuntu 24.04 under WSL2 (g++ 13.3, glibc 2.39, same CPU), the tight loop gave p99 ratios of 1.12, 1.02 and 1.26 in three runs, and the writer added 834 to 866 documents in the 0.3 s of the measurement.
+
+### Many readers
+
+`make MODE=release bench ARGS="--scaling 1 --passes 3"` builds the same 100,000 document `luxcore::Index` and runs 1, 2, 4, 8 and 16 reader threads that type the keystroke list, first alone and then next to the background writer (pause 200 µs). Every reader runs one `search` and one `suggest` per keystroke. Median of five runs on the machine above:
+
+| Readers | Keystrokes per second, readers only | Keystrokes per second, with the writer |
+| --- | --- | --- |
+| 1 | 4,342 | 3,559 |
+| 4 | 17,552 | 7,551 |
+| 8 | 33,161 | 14,431 |
+| 16 | 48,454 | 7,118 |
+
+Readers alone scale to about 7.6 times one reader at 8 threads. The gain flattens at 16, which is probably the machine (8 performance cores with two threads each, plus 8 efficiency cores) and not the library. That is a guess and I did not test it. A background writer cuts the throughput by a half or more from 4 readers up, and at 16 readers the median keystroke takes 2.2 ms. A write waits for the searches in flight and holds back every search that arrives after it. A cheaper reader lock did not change this, and neither did analysing a document before taking the write lock. Both were measured, with no difference past the noise between runs. Readers that never wait on writers need a different design, such as the immutable segments in the table above.
+
+`bench/RESULTS.md` records the machine, flags and numbers of the latency work in one place.
 
 ### Tests
 
