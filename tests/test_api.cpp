@@ -33,6 +33,15 @@ void write_all(const std::string& path, const std::string& bytes) {
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
+std::filesystem::path path_from_utf8(const std::string& text) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+}
+
+std::string utf8_of(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
 template <typename Body>
 std::string failure_kind(Body body) {
     try {
@@ -194,4 +203,23 @@ TEST(api_load_and_save_failures_have_their_own_exception_types) {
     CHECK_EQ(failure_kind([&] { notes().save(unwritable); }), "io");
     CHECK_EQ(failure_kind([&] { luxcore::Index::load(garbage.str()); }), "format");
     CHECK_EQ(failure_kind([&] { luxcore::Index::load(truncated.str()); }), "format");
+}
+
+TEST(api_paths_are_utf8_whatever_the_platform_code_page) {
+    const std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                       path_from_utf8("luxcore_api_caf\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC.lux");
+    std::filesystem::remove(path);
+
+    notes().save(utf8_of(path));
+    const bool written_under_that_name = std::filesystem::is_regular_file(path);
+    const std::string failure = failure_kind([&] {
+        const luxcore::Index loaded = luxcore::Index::load(utf8_of(path));
+        CHECK_EQ(loaded.size(), static_cast<std::size_t>(3));
+        CHECK_EQ(keys_of(loaded.search("raincoat")), "trip,");
+    });
+
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    CHECK(written_under_that_name);
+    CHECK_EQ(failure, "none");
 }
