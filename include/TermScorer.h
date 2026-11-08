@@ -78,7 +78,7 @@ private:
     double weighted_tf(std::string_view field, int doc_id, double frequency, double boost, double average_length) const;
     double average_length(std::string_view field) const;
     double combine(double term_idf, double tf) const;
-    DocScores score_by_doc(const std::string& term) const;
+    ScoredDocs score_by_doc(const std::string& term) const;
 
 public:
     class PhraseTally {

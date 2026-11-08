@@ -111,32 +111,46 @@ double TermScorer::combine(double term_idf, double tf) const {
     return scoring.scorer == Scorer::Bm25 ? term_idf * tf / (scoring.bm25.k1 + tf) : tf * term_idf;
 }
 
-TermScorer::DocScores TermScorer::score_by_doc(const std::string& term) const {
-    DocScores scores;
+ScoredDocs TermScorer::score_by_doc(const std::string& term) const {
+    ScoredDocs summed;
     const std::vector<Posting>* postings = scope.postings(term);
     if (!postings) {
-        return scores;
+        return summed;
     }
 
     const double idf_of_term = idf(postings->size());
 
-    DocScores weighted_tfs;
+    ScoredDocs merged;
     scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
                                             double boost) {
         const double field_average = average_length(field_name);
+        merged.clear();
+        merged.reserve(summed.size() + field_postings.size());
+        auto known = summed.begin();
         for (const auto& posting : field_postings) {
-            weighted_tfs[posting.doc_id] += weighted_tf(field_name, posting.doc_id,
-                                                        static_cast<double>(posting.term_frequency), boost, field_average);
+            for (; known != summed.end() && known->doc_id < posting.doc_id; ++known) {
+                merged.push_back(*known);
+            }
+            const double tf = weighted_tf(field_name, posting.doc_id, static_cast<double>(posting.term_frequency),
+                                          boost, field_average);
+            if (known != summed.end() && known->doc_id == posting.doc_id) {
+                merged.push_back({posting.doc_id, known->score + tf});
+                ++known;
+            } else {
+                merged.push_back({posting.doc_id, 0.0 + tf});
+            }
         }
+        merged.insert(merged.end(), known, summed.end());
+        summed.swap(merged);
     });
-    for (const auto& [doc_id, tf] : weighted_tfs) {
-        scores[doc_id] = combine(idf_of_term, tf);
+    for (ScoredDoc& doc : summed) {
+        doc.score = combine(idf_of_term, doc.score);
     }
-    return scores;
+    return summed;
 }
 
 ScoredDocs TermScorer::score(const std::string& term) const {
-    return by_doc(score_by_doc(term));
+    return score_by_doc(term);
 }
 
 ScoredDocs TermScorer::score_prefix(const std::string& term, const std::vector<std::string>& completions) const {
