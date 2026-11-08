@@ -3,10 +3,21 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace luxcore {
+
+class IoError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+class FormatError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 struct Hit {
     std::string key;

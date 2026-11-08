@@ -37,7 +37,7 @@ for (const luxcore::Hit& hit : index.search("shoping lis")) std::cout << hit.key
 - `search(query, limit = 10)` returns `Hit`s with `key` and `score`, best first. Searches use BM25 with a boost on `title`, match the unfinished last word as a prefix, and tolerate typos in the finished words.
 - `suggest(query, limit = 5)` returns completions of the unfinished last word, most common first.
 - `stored(key, field)` returns the stored `title` or `body` text, or nothing when the key or field is unknown.
-- `save(path)` writes the index to one file. `Index::load(path)` reads such a file and returns an index that behaves like the one that was saved. Both throw `std::runtime_error` on I/O errors and `load` also throws on a file that is not a valid index. See Persistence.
+- `save(path)` writes the index to one file. `Index::load(path)` reads such a file and returns an index that behaves like the one that was saved. Both throw `luxcore::IoError` when the file cannot be opened, read or written, and `load` throws `luxcore::FormatError` when the file is not a valid index. Both derive from `std::runtime_error`. Paths are UTF-8 on every platform. See Persistence.
 
 The public `Index` uses no stop words, so it never reads a file from the working directory. For stop words, highlighting, field-scoped search or query trees, use the classes in `include/` directly.
 
@@ -45,11 +45,12 @@ The public `Index` uses no stop words, so it never reads a file from the working
 
 `api/luxcore_c.h` wraps `luxcore::Index` in flat C functions so that C, Python, C# and Rust can call it. It is plain C11 with `extern "C"` guards and needs no C++ headers. Link `libluxcore.a` with a C++ linker driver, or load the shared library.
 
-- Every function that can fail returns a `lux_status`: `LUX_OK`, `LUX_INVALID_ARGUMENT`, `LUX_NOT_FOUND`, `LUX_OUT_OF_MEMORY` or `LUX_INTERNAL_ERROR`. No exception crosses the boundary. A null pointer, including a null string with length 0, gives `LUX_INVALID_ARGUMENT`, and so does an empty key.
+- Every function that can fail returns a `lux_status`: `LUX_OK`, `LUX_INVALID_ARGUMENT`, `LUX_NOT_FOUND`, `LUX_OUT_OF_MEMORY`, `LUX_INTERNAL_ERROR`, `LUX_IO_ERROR` or `LUX_INVALID_FORMAT`. No exception crosses the boundary. A null pointer, including a null string with length 0, gives `LUX_INVALID_ARGUMENT`, and so does an empty key or an empty path.
 - `lux_status_message(status)` returns static text for a status. The caller does not free it, and it is safe to call from any thread.
 - Strings go in as UTF-8 `const char*` plus a `size_t` byte length. They need no NUL terminator and the library copies them before it returns.
 - `lux_index_create(&index)` makes an index and `lux_index_free(index)` destroys it. The caller owns the index and frees it once.
 - `lux_index_add`, `lux_index_remove` and `lux_index_size` mirror `add`, `remove` and `size`. `remove` reports whether the key was present through an `int*`.
+- `lux_index_save(index, path, path_length)` writes the index to one file. `lux_index_load(path, path_length, &index)` reads such a file and returns a new index through an out pointer. The caller owns the loaded index and frees it with `lux_index_free`. On any non-OK status `*out` is set to null and nothing needs freeing. The path is UTF-8 with a byte length and needs no NUL terminator, also on Windows. `LUX_IO_ERROR` means the file cannot be opened, read or written, or is not a regular file. `LUX_INVALID_FORMAT` means the file is not a valid LuxCore index. See Persistence.
 - `lux_index_search`, `lux_index_suggest` and `lux_index_stored` return a result handle through an out pointer: `lux_hits`, `lux_strings` and `lux_text`. The caller owns each handle and frees it with `lux_hits_free`, `lux_strings_free` or `lux_text_free`. On any non-OK status the out pointer is set to null and nothing needs freeing. `lux_index_stored` returns `LUX_NOT_FOUND` when the key or field is unknown.
 - Accessors return a pointer and a length into the handle: `lux_hits_key`, `lux_strings_get` and `lux_text_data` with `lux_text_length`. The pointer stays valid until the handle is freed. Copy the bytes to keep them longer. An out of range position returns null.
 - The free functions accept null. Results do not depend on the index, so a result may outlive the index that made it.
@@ -57,7 +58,7 @@ The public `Index` uses no stop words, so it never reads a file from the working
 
 `make shared` builds `build/<mode>/libluxcore.so`, or `libluxcore.dll` on Windows, with only the `lux_*` functions exported. The Windows DLL links the C++ runtime statically, so it depends only on system DLLs. Code that includes the header for the static library needs no macro. Code that links the Windows DLL defines `LUX_SHARED` so that the functions are imported.
 
-`examples/python/luxcore.py` is a `ctypes` binding with an `Index` class and a demo. Run `make shared`, then `python examples/python/luxcore.py --lib build/debug/libluxcore.dll`, or set `LUXCORE_LIB` to the library path. It takes an optional query argument. `tests/c/test_c_api.c` is a C test that `make test` builds and runs.
+`examples/python/luxcore.py` is a `ctypes` binding with an `Index` class and a demo. `Index.save(path)` and the class method `Index.open(path)` persist and restore an index, and a failure raises `LuxError` with the status. The demo saves the index to a temporary file, reloads it and checks that the hits match. Run `make shared`, then `python examples/python/luxcore.py --lib build/debug/libluxcore.dll`, or set `LUXCORE_LIB` to the library path. It takes an optional query argument. `tests/c/test_c_api.c` is a C test that `make test` builds and runs.
 
 ### Size and build time
 
@@ -74,9 +75,11 @@ luxcore::Index again = luxcore::Index::load("notes.lux");
 
 A loaded index returns the same hits with the same scores, the same suggestions and the same stored text as the index that was saved. It stays fully usable, so `add`, replace and `remove` work after a load, and new documents get internal ids that continue after the highest id ever used. Saving does not change the index. Saving and loading an empty index works.
 
-`save` and `load` throw `std::runtime_error`. `save` throws when the file cannot be written. `load` throws when the path is not a readable file, when the magic number is wrong, when the format version is not supported, when the file is truncated or has extra bytes, and when the content is inconsistent. The message says which. A bad file never crashes the program and never makes `load` allocate more than the file can justify. `save` writes straight to the target path, so a crash in the middle of a save can leave a truncated file, which `load` then rejects. Write to a temporary name and rename it when that matters.
+`save` and `load` throw two exception types that derive from `std::runtime_error`, so one `catch` on the base still handles both. `luxcore::IoError` means the file system refused. `save` throws it when the file cannot be written, and `load` throws it when the path is not a readable file. `luxcore::FormatError` means the bytes are not an index. `load` throws it when the magic number is wrong, when the format version is not supported, when the file is truncated or has extra bytes, and when the content is inconsistent. The message says which. A bad file never crashes the program and never makes `load` allocate more than the file can justify. `save` writes straight to the target path, so a crash in the middle of a save can leave a truncated file, which `load` then rejects. Write to a temporary name and rename it when that matters.
 
-The C API does not expose `save` and `load` yet.
+The C API exposes both as `lux_index_save` and `lux_index_load`. `IoError` becomes `LUX_IO_ERROR` and `FormatError` becomes `LUX_INVALID_FORMAT`. Every other failure keeps its usual status. `save` may run while other threads search or add, and `load` returns a new index that shares nothing with any other. See Thread safety.
+
+The path is UTF-8 on every platform. On Windows the library converts it to a wide path, so a name with characters outside the ANSI code page works.
 
 ### What is saved
 
@@ -124,7 +127,8 @@ A GUI app can index in the background while its UI thread searches on every keys
 - `add` and `remove` take the lock in exclusive mode. One writer or many writers can call them. Writes take turns. A write waits for the searches that are running and blocks the ones that arrive after it while it runs.
 - A search sees the index before a write or after it. It never sees half of a document.
 - Every result is returned by value, so a `Hit`, a suggestion or a stored string stays valid after the call returns, whatever the index does next. The `Searcher` that runs a query is built inside each call and dies before the lock is released, so nothing can dangle.
-- `save` holds the shared lock only while it builds the bytes. It writes the file after it lets go.
+- `save` holds the shared lock only while it builds the bytes. It writes the file after it lets go. Other threads can search and add while a save runs, and the file holds the index as it was when the save took the lock. Two saves to the same path at the same time write the same file twice, so give each save its own path.
+- `load` is a static function that builds a new index and touches no existing one. The index it returns is independent and can be used by any thread.
 - The lock is first come, first served. A search that waits for a write waits for at most the writes that were queued before it. A write that waits for searches is never starved by searches that arrive later.
 - The C API wraps `Index`, has no state of its own, and inherits all of this.
 

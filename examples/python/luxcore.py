@@ -2,9 +2,13 @@ import argparse
 import ctypes
 import functools
 import os
+import sys
+import tempfile
 
 OK = 0
 NOT_FOUND = 2
+IO_ERROR = 5
+INVALID_FORMAT = 6
 
 
 class LuxError(Exception):
@@ -32,6 +36,8 @@ def load(path=None):
         "lux_index_add": (ctypes.c_int, [handle, text, size, text, size, text, size]),
         "lux_index_remove": (ctypes.c_int, [handle, text, size, ctypes.POINTER(ctypes.c_int)]),
         "lux_index_size": (ctypes.c_int, [handle, ctypes.POINTER(size)]),
+        "lux_index_save": (ctypes.c_int, [handle, text, size]),
+        "lux_index_load": (ctypes.c_int, [text, size, out]),
         "lux_index_stored": (ctypes.c_int, [handle, text, size, text, size, out]),
         "lux_index_search": (ctypes.c_int, [handle, text, size, size, out]),
         "lux_index_suggest": (ctypes.c_int, [handle, text, size, size, out]),
@@ -59,12 +65,25 @@ def utf8(value):
 
 
 class Index:
-    def __init__(self, library=None):
+    def __init__(self, library=None, *, _handle=None):
         self._handle = None
         self._lib = load(library)
+        if _handle is None:
+            _handle = ctypes.c_void_p()
+            self._check(self._lib.lux_index_create(ctypes.byref(_handle)))
+        self._handle = _handle
+
+    @classmethod
+    def open(cls, path, library=None):
+        lib = load(library)
         handle = ctypes.c_void_p()
-        self._check(self._lib.lux_index_create(ctypes.byref(handle)))
-        self._handle = handle
+        status = lib.lux_index_load(*utf8(os.fspath(path)), ctypes.byref(handle))
+        if status != OK:
+            raise LuxError(status, lib.lux_status_message(status).decode("ascii"))
+        return cls(library, _handle=handle)
+
+    def save(self, path):
+        self._check(self._lib.lux_index_save(self._handle, *utf8(os.fspath(path))))
 
     def close(self):
         if self._handle:
@@ -156,6 +175,21 @@ if __name__ == "__main__":
             print(f"  {key}  {index.stored(key, 'title')}  {score:.3f}")
 
         print("Suggestions for \"rea\":", index.suggest("rea"))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "notes.lux")
+            index.save(path)
+            with Index.open(path, args.lib) as reloaded:
+                reloaded_hits = reloaded.search(args.query)
+                if len(reloaded) != len(index) or reloaded_hits != hits:
+                    sys.exit("the reloaded index differs from the saved one")
+                print(f"Reloaded {len(reloaded)} notes from a file")
+                for key, score in reloaded_hits[:1]:
+                    print(f"  {key}  {reloaded.stored(key, 'title')}  {score:.3f}")
+            try:
+                Index.open(os.path.join(directory, "missing.lux"), args.lib)
+            except LuxError as error:
+                print(f"Missing file rejected with status {error.status}: {error}")
 
         try:
             index.add("", "title", "body")
