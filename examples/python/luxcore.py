@@ -29,9 +29,10 @@ class _SnippetOptions(ctypes.Structure):
 
 
 class LuxError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, offset=None):
         super().__init__(message)
         self.status = status
+        self.offset = offset
 
 
 @functools.cache
@@ -59,11 +60,12 @@ def load(path=None):
         "lux_index_load_with": (ctypes.c_int, [text, size, ctypes.POINTER(_Config), out]),
         "lux_index_stored": (ctypes.c_int, [handle, text, size, text, size, out]),
         "lux_index_search": (ctypes.c_int, [handle, text, size, size, out]),
-        "lux_index_search_query": (ctypes.c_int, [handle, text, size, size, out]),
+        "lux_index_search_query": (ctypes.c_int, [handle, text, size, size, out, ctypes.POINTER(size)]),
         "lux_index_snippet": (
             ctypes.c_int, [handle, text, size, text, size, text, size, ctypes.POINTER(_SnippetOptions), out]),
         "lux_index_snippet_query": (
-            ctypes.c_int, [handle, text, size, text, size, text, size, ctypes.POINTER(_SnippetOptions), out]),
+            ctypes.c_int,
+            [handle, text, size, text, size, text, size, ctypes.POINTER(_SnippetOptions), out, ctypes.POINTER(size)]),
         "lux_index_suggest": (ctypes.c_int, [handle, text, size, size, out]),
         "lux_hits_count": (size, [handle]),
         "lux_hits_key": (ctypes.c_void_p, [handle, size, ctypes.POINTER(size)]),
@@ -154,15 +156,15 @@ class Index:
         return self._hits(self._lib.lux_index_search, query, limit)
 
     def search_query(self, query, limit=10):
-        return self._hits(self._lib.lux_index_search_query, query, limit)
+        return self._hits(self._lib.lux_index_search_query, query, limit, ctypes.c_size_t())
 
     def snippet(self, key, field, query, **options):
         return self._snippet(self._lib.lux_index_snippet, key, field, query, options)
 
     def snippet_query(self, key, field, query, **options):
-        return self._snippet(self._lib.lux_index_snippet_query, key, field, query, options)
+        return self._snippet(self._lib.lux_index_snippet_query, key, field, query, options, ctypes.c_size_t())
 
-    def _snippet(self, function, key, field, query, options):
+    def _snippet(self, function, key, field, query, options, offset=None):
         unknown = set(options) - {"length", "start_marker", "end_marker", "ellipsis"}
         if unknown:
             raise TypeError(f"unexpected snippet option {sorted(unknown)[0]!r}")
@@ -174,20 +176,22 @@ class Index:
                 setattr(settings, name, data)
                 setattr(settings, name + "_length", length)
         result = ctypes.c_void_p()
+        trailing = () if offset is None else (ctypes.byref(offset),)
         status = function(self._handle, *utf8(key), *utf8(field), *utf8(query), ctypes.byref(settings),
-                          ctypes.byref(result))
+                          ctypes.byref(result), *trailing)
         if status == NOT_FOUND:
             return None
-        self._check(status)
+        self._check(status, offset)
         try:
             data = self._lib.lux_text_data(result)
             return ctypes.string_at(data, self._lib.lux_text_length(result)).decode("utf-8")
         finally:
             self._lib.lux_text_free(result)
 
-    def _hits(self, function, query, limit):
+    def _hits(self, function, query, limit, offset=None):
         result = ctypes.c_void_p()
-        self._check(function(self._handle, *utf8(query), limit, ctypes.byref(result)))
+        trailing = () if offset is None else (ctypes.byref(offset),)
+        self._check(function(self._handle, *utf8(query), limit, ctypes.byref(result), *trailing), offset)
         try:
             hits = []
             length = ctypes.c_size_t()
@@ -212,9 +216,10 @@ class Index:
         finally:
             self._lib.lux_strings_free(result)
 
-    def _check(self, status):
+    def _check(self, status, offset=None):
         if status != OK:
-            raise LuxError(status, self._lib.lux_status_message(status).decode("ascii"))
+            position = offset.value if offset is not None and status == INVALID_QUERY else None
+            raise LuxError(status, self._lib.lux_status_message(status).decode("ascii"), position)
 
 
 if __name__ == "__main__":
@@ -246,7 +251,7 @@ if __name__ == "__main__":
         try:
             index.search_query("book (train")
         except LuxError as error:
-            print(f"Bad query rejected with status {error.status}: {error}")
+            print(f"Bad query rejected with status {error.status} at byte offset {error.offset}: {error}")
 
         with Index(args.lib, positions=True) as phrases:
             phrases.add("fox", "Animals", "the quick brown fox jumps over the lazy dog")
