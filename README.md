@@ -13,7 +13,7 @@ Lucene is built for servers, clusters and huge corpora. LuxCore is the small ver
 - Not a server. There is no network layer, no sharding and no replication.
 - Not built for large corpora. The index lives in memory.
 - Not an on-disk store. The index lives in memory. It can be saved to one file and loaded back whole, but it is not updated on disk. See Persistence.
-- Not thread safe yet. Do not search while another thread adds or removes documents.
+- Not a concurrent engine. One `luxcore::Index` can be shared between threads, but all writes take turns behind a single lock. See Thread safety.
 - Not a drop-in for Lucene. The names and file formats differ.
 
 ## Quick start
@@ -24,7 +24,7 @@ index.add("note-1", "Shopping list", "milk, eggs, bread and butter");
 for (const luxcore::Hit& hit : index.search("shoping lis")) std::cout << hit.key << "\n";
 ```
 
-`make lib` builds `build/<mode>/libluxcore.a`. Compile your code with `-I<luxcore>/api`, include `LuxCore.h`, and link the library. `api/` holds the public headers, `LuxCore.h` for C++ and `luxcore_c.h` for C. `include/` holds internals that the library uses and embedders do not need.
+`make lib` builds `build/<mode>/libluxcore.a`. Compile your code with `-I<luxcore>/api`, include `LuxCore.h`, and link the library. On Linux add `-pthread` to the link line, because `Index` locks with `std::mutex` and `std::condition_variable`. `api/` holds the public headers, `LuxCore.h` for C++ and `luxcore_c.h` for C. `include/` holds internals that the library uses and embedders do not need.
 
 `make example` builds `examples/search.cpp` against `libluxcore.a` with only `api/` on the include path, then runs it. Pass a query with `make example ARGS="brea"`.
 
@@ -53,7 +53,7 @@ The public `Index` uses no stop words, so it never reads a file from the working
 - `lux_index_search`, `lux_index_suggest` and `lux_index_stored` return a result handle through an out pointer: `lux_hits`, `lux_strings` and `lux_text`. The caller owns each handle and frees it with `lux_hits_free`, `lux_strings_free` or `lux_text_free`. On any non-OK status the out pointer is set to null and nothing needs freeing. `lux_index_stored` returns `LUX_NOT_FOUND` when the key or field is unknown.
 - Accessors return a pointer and a length into the handle: `lux_hits_key`, `lux_strings_get` and `lux_text_data` with `lux_text_length`. The pointer stays valid until the handle is freed. Copy the bytes to keep them longer. An out of range position returns null.
 - The free functions accept null. Results do not depend on the index, so a result may outlive the index that made it.
-- An index is not thread safe, as with the C++ class. Use one thread per index, or lock around calls.
+- An index is as thread safe as the C++ class, because it wraps one. Any number of threads may call the `lux_index_*` functions on the same index at once, and writes take turns. Do not call `lux_index_free` while another thread still uses the index. Result handles are plain data. A handle that one thread holds is not shared with the others. See Thread safety.
 
 `make shared` builds `build/<mode>/libluxcore.so`, or `libluxcore.dll` on Windows, with only the `lux_*` functions exported. The Windows DLL links the C++ runtime statically, so it depends only on system DLLs. Code that includes the header for the static library needs no macro. Code that links the Windows DLL defines `LUX_SHARED` so that the functions are imported.
 
@@ -113,6 +113,78 @@ Measured on an Intel Core i7-13700K, Windows 11, g++ 16.1.0 with `-O2 -DNDEBUG`,
 | Load | 211 to 244 ms | 11.5 to 13.8 times faster than building |
 
 In one profiled run the 220 ms of a load split into about 25 ms for the stored documents, 11 ms for the keys, and 166 ms for the postings. Of the postings time, about 54 ms is parsing, 39 ms builds the per-document term entries, 33 ms fills their term lists, 15 ms builds the fuzzy trie, and the rest merges the per-field lists into the combined map. The reading of the file is the remaining 20 ms.
+
+## Thread safety
+
+A GUI app can index in the background while its UI thread searches on every keystroke. `luxcore::Index` supports that. It holds one reader-writer lock around the whole index. The lock is `FairSharedMutex` in `include/FairSharedMutex.h`, a small first come, first served lock that this library ships instead of the platform's `std::shared_mutex`.
+
+### What is safe
+
+- `search`, `suggest`, `stored`, `size` and `save` take the lock in shared mode. Any number of threads can call them at the same time.
+- `add` and `remove` take the lock in exclusive mode. One writer or many writers can call them. Writes take turns. A write waits for the searches that are running and blocks the ones that arrive after it while it runs.
+- A search sees the index before a write or after it. It never sees half of a document.
+- Every result is returned by value, so a `Hit`, a suggestion or a stored string stays valid after the call returns, whatever the index does next. The `Searcher` that runs a query is built inside each call and dies before the lock is released, so nothing can dangle.
+- `save` holds the shared lock only while it builds the bytes. It writes the file after it lets go.
+- The lock is first come, first served. A search that waits for a write waits for at most the writes that were queued before it. A write that waits for searches is never starved by searches that arrive later.
+- The C API wraps `Index`, has no state of its own, and inherits all of this.
+
+### What is not safe
+
+- Moving, assigning or destroying an `Index`, or calling `lux_index_free`, while another thread still uses it. Stop the other threads first.
+- Using the classes in `include/` (`Indexer`, `Searcher`, `InvertedIndex`) from several threads with a writer. They have no lock, and a `Searcher` holds references into its `Indexer`. A write during any read is a data race.
+- Expecting fast writes next to a reader that never pauses. Reads and writes alternate, so a writer in a tight loop adds about one document per search. See the trade-offs below.
+
+### What was already true
+
+Concurrent reads of an unchanged `Indexer` and `Searcher` were safe before the lock, and they still are. The const methods share no mutable state. There is no `mutable` member and no static or thread local cache in `include/` or `src/`. The test `threads_concurrent_reads_on_an_unchanged_searcher_match_single_thread` runs 8 threads, half on one shared `Searcher` and half on a `Searcher` of their own, and each result must equal the single-threaded result, including scores. Its twin for `Index` does the same through the public class. Both passed before any production change, and ThreadSanitizer reports nothing for either of them on the code without the lock.
+
+### Why a lock
+
+| Design | Cost of a write | Complexity | Verdict |
+| --- | --- | --- | --- |
+| Reader-writer lock | The write holds the lock for one document. Building the 100,000 document corpus averaged about 35 µs per `add`. | One small lock class and a few lines in `Index`. Internals stay unsynchronized. | Chosen. A reader waits at most for the writes queued ahead of it. |
+| Copy-on-write snapshot | Copies the whole index on every write. A 100,000 document index saves to a 37 MB file, so each `add` would copy tens of megabytes. | Readers never wait, but memory and time per write grow with the index. | Rejected. Indexing per keystroke or per file would be unaffordable. |
+| Immutable segments | A write makes a small segment. Cheap for the writer and for readers. | Segment merging, tombstones for removals, and corpus statistics across segments for BM25 and fuzzy terms. This is the Lucene design. | Rejected. It is a redesign that a small, single process, in-memory library does not need. |
+
+### Trade-offs
+
+- A search holds the shared lock for its whole run, fuzzy matching included. A writer waits for it, about 2 ms at the 99th percentile on the 100,000 document corpus below.
+- The lock is a `std::mutex` and a `std::condition_variable`. Every lock and unlock takes that mutex for a moment, and a hand-off to a waiting thread costs a wake-up. A reader and a writer that never pause alternate, one search per write. In the tight loop below the median keystroke rises from about 0.23 ms to 0.42 ms, and the writer adds 2,900 to 3,300 documents per second. One typist and a bulk indexer that reads and parses between adds do not notice.
+- `FairSharedMutex` is why a bulk indexer cannot stall the UI. The platform's `std::shared_mutex` could. Glibc's read-write lock prefers readers, so readers that search without a pause starve a writer. The Windows runtime used here (winpthreads in g++ 16.1) lets a writer that retakes the lock at once keep it, so a waiting reader can wait many writes. The first lock of a fresh winpthreads `std::shared_mutex` also raced when several threads made it together. `FairSharedMutex` has no such first-use step, so the `Index` constructor does not need to take the lock once.
+- `std::thread`, `std::mutex` and `std::condition_variable` need `-pthread` when linking on Linux. The Makefile passes it to every link rule. Add flags with `EXTRA_LDFLAGS`.
+
+### Measured numbers
+
+`make MODE=release bench ARGS="--indexing 1"` builds the 100,000 document corpus a second time as a `luxcore::Index`, then types the same keystroke list three times. Each keystroke is one `search` plus one `suggest`. The three measurements are idle, while one background thread adds documents, and idle again on the index that the writer grew. The writer adds a new document, removes the oldest one it added after every 10th add, and pauses `--writer_pause_us` microseconds (default 200, 0 is a tight loop). The bench prints how many documents the writer added, checks that the final size equals the start plus adds minus removes, and exits non-zero if it does not.
+
+`Index` uses no stop words, BM25 and fuzzy matching, so it is slower than the `Searcher` baseline that the bench prints first (`METRIC p99_us` 345 to 351 µs over three runs, with stop words, tf-idf and no fuzzing). Compare the rows within one run.
+
+Measured on an Intel Core i7-13700K, Windows 11, g++ 16.1.0 with `-O2 -DNDEBUG`, three runs each. The last column is the 99th percentile while writing divided by the idle one. The index grows during the measurement, and the idle-again column shows what growth alone costs.
+
+| Writer | Documents added during the run | Idle p99 | While writing p99 | Idle again p99 | Ratio |
+| --- | --- | --- | --- | --- | --- |
+| Pause 200 µs (default) | 8,456 to 8,645 | 2.11 to 2.27 ms | 2.33 to 2.42 ms | 2.24 to 2.57 ms | 1.03 to 1.11 |
+| Pause 50 µs | 11,179 to 11,333 | 2.18 to 2.25 ms | 2.38 to 2.52 ms | 2.37 to 2.43 ms | 1.06 to 1.14 |
+| Tight loop, pause 0 | 827 to 835 | 2.35 to 2.49 ms | 2.46 to 2.68 ms | 2.32 to 2.43 ms | 1.04 to 1.11 |
+
+The tight loop rows use `--passes 1 --queries 30`, 458 keystrokes, which take 0.3 s. The writer adds one document per search there, because the reader never pauses and the lock hands over in turn. The median keystroke takes 0.42 to 0.44 ms while the writer runs, against 0.23 to 0.25 ms idle. The paced writers add about as many documents as they did under the platform lock.
+
+The first version of the lock was the platform's `std::shared_mutex`. With the same tight loop on this machine it gave a p99 of 99.9 to 156.5 ms while writing against 2.18 to 2.28 ms idle (ratio 45.8 to 71.1) and a median keystroke of 21 to 30 ms, while the writer added 122,620 to 163,825 documents and the index doubled. A reader that arrived while the writer kept releasing and retaking the lock waited many writes. That is why the library has its own lock.
+
+On Ubuntu 24.04 under WSL2 (g++ 13.3, glibc 2.39, same CPU), the tight loop gave p99 ratios of 1.12, 1.02 and 1.26 in three runs, and the writer added 834 to 866 documents in the 0.3 s of the measurement.
+
+### Tests
+
+`tests/test_threads.cpp` holds the thread tests. `make test T=threads` builds and runs them. They are part of `make test`.
+
+- Concurrent reads on an unchanged `Index` and on an unchanged `Searcher` equal the single-threaded results.
+- The stress test starts 4 reader threads and one writer. The writer adds 3,000 documents, replaces some and removes some. The readers loop over `search`, `suggest`, `stored` and `size`. They assert that the 40 stable anchor documents are always found with the same hits and the same suggestions, that every returned key was added at some point, that scores are finite, and that `size()` stays within bounds. Worker threads only count failures in atomics. The main thread checks them. The loops have fixed bounds, so the test ends the same way every time and takes well under a second in a debug build.
+- Several writers lose no document, and `save` during writes produces a file that `load` accepts.
+- `tests/test_fair_mutex.cpp` tests the lock alone. Writers exclude each other and the readers. Readers share the lock. A reader that arrives after a waiting writer enters after it. A reader that arrives while a writer loops without a pause is overtaken by at most a few writes, and a writer that arrives while readers loop without a pause is overtaken by at most a few reads. The last two count operations and do not use a clock. `make test T=fair_mutex` runs them. The same tests against `std::shared_mutex` fail, on Windows by the overtaking of the reader and on Linux by the overtaking of the writer.
+
+Without the lock these tests fail. On this machine the stress test aborted every time in debug and crashed in release, with a reader inside `FuzzyIndex::collect` reading a node index of `-1` while the writer rebuilt the trie.
+
+To run the tests under ThreadSanitizer on Linux, use `setarch x86_64 -R make test T=threads MODE=release EXTRA_CXXFLAGS="-fsanitize=thread -g" EXTRA_CFLAGS=-fsanitize=thread EXTRA_LDFLAGS=-fsanitize=thread`. The `setarch` part turns off address randomization, which some newer kernels need for ThreadSanitizer. With the lock, ThreadSanitizer reported nothing for the full suite. Without it, the stress test produced dozens of data race reports.
 
 ## Document keys
 

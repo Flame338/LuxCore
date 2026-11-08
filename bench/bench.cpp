@@ -1,7 +1,9 @@
 #include "Indexer.h"
+#include "LuxCore.h"
 #include "Searcher.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -12,6 +14,7 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -28,6 +31,8 @@ struct Options {
     int stop = 100;
     int removes = 1000;
     int fuzzy = 0;
+    int indexing = 0;
+    int writer_pause_us = 200;
     std::uint64_t seed = 12345;
 };
 
@@ -113,13 +118,22 @@ std::string sentence(const std::vector<std::string>& words, std::discrete_distri
     return text;
 }
 
-void build_corpus(Indexer& indexer, const std::vector<std::string>& words,
-                  std::discrete_distribution<int>& zipf, std::mt19937_64& rng, int docs) {
+template <typename Add>
+void generate_corpus(const std::vector<std::string>& words, std::discrete_distribution<int>& zipf,
+                     std::mt19937_64& rng, int docs, Add add) {
     for (int i = 0; i < docs; i++) {
         const std::string title = sentence(words, zipf, rng, 2 + static_cast<int>(rng() % 3));
         const std::string body = sentence(words, zipf, rng, 20 + static_cast<int>(rng() % 21));
-        indexer.add_document("doc-" + std::to_string(i), make_text_document(title, body));
+        add("doc-" + std::to_string(i), title, body);
     }
+}
+
+void build_corpus(Indexer& indexer, const std::vector<std::string>& words,
+                  std::discrete_distribution<int>& zipf, std::mt19937_64& rng, int docs) {
+    generate_corpus(words, zipf, rng, docs,
+                    [&](const std::string& key, const std::string& title, const std::string& body) {
+                        indexer.add_document(key, make_text_document(title, body));
+                    });
 }
 
 std::vector<Keystroke> make_keystrokes(const std::vector<std::string>& words,
@@ -298,6 +312,117 @@ std::vector<double> timed_removals(Indexer& indexer, int docs, int removes) {
     return samples;
 }
 
+struct DocumentText {
+    std::string title;
+    std::string body;
+};
+
+std::vector<double> timed_index_passes(const luxcore::Index& index, const std::vector<Keystroke>& keystrokes,
+                                       int passes, std::size_t& sink) {
+    std::vector<double> totals;
+    totals.reserve(keystrokes.size() * static_cast<std::size_t>(passes));
+    for (int pass = 0; pass < passes; pass++) {
+        for (const Keystroke& keystroke : keystrokes) {
+            const Clock::time_point start = Clock::now();
+            const std::vector<luxcore::Hit> hits = index.search(keystroke.text, result_limit);
+            const std::vector<std::string> suggestions = index.suggest(keystroke.text, suggestion_limit);
+            const Clock::time_point end = Clock::now();
+            sink += hits.size() + suggestions.size();
+            totals.push_back(microseconds(start, end));
+        }
+    }
+    return totals;
+}
+
+void print_latency(const char* label, const std::vector<double>& totals) {
+    std::cout << "indexing " << label << " n=" << totals.size() << " p50_us=" << percentile(totals, 0.50)
+              << " p95_us=" << percentile(totals, 0.95) << " p99_us=" << percentile(totals, 0.99)
+              << " max_us=" << percentile(totals, 1.0) << "\n";
+}
+
+bool measure_indexing(const Options& options, const std::vector<std::string>& words,
+                      std::discrete_distribution<int> zipf, std::mt19937_64 corpus_rng,
+                      const std::vector<Keystroke>& keystrokes) {
+    luxcore::Index index;
+    const Clock::time_point build_start = Clock::now();
+    generate_corpus(words, zipf, corpus_rng, options.docs,
+                    [&](const std::string& key, const std::string& title, const std::string& body) {
+                        index.add(key, title, body);
+                    });
+    const double build_ms = microseconds(build_start, Clock::now()) / 1000.0;
+
+    std::mt19937_64 writer_rng(options.seed + 1);
+    std::vector<DocumentText> pool;
+    for (int i = 0; i < 2000; i++) {
+        pool.push_back({sentence(words, zipf, writer_rng, 2 + static_cast<int>(writer_rng() % 3)),
+                        sentence(words, zipf, writer_rng, 20 + static_cast<int>(writer_rng() % 21))});
+    }
+
+    std::size_t sink = 0;
+    timed_index_passes(index, keystrokes, 1, sink);
+    const std::size_t docs_before = index.size();
+    const std::vector<double> idle = timed_index_passes(index, keystrokes, options.passes, sink);
+
+    std::atomic<bool> stop{false};
+    std::atomic<std::size_t> added{0};
+    std::atomic<std::size_t> removed{0};
+    std::atomic<int> writer_errors{0};
+    const Clock::time_point writing_start = Clock::now();
+    std::thread writer([&] {
+        try {
+            std::size_t next = 0;
+            std::size_t oldest = 0;
+            while (!stop.load(std::memory_order_relaxed)) {
+                const DocumentText& text = pool[next % pool.size()];
+                index.add("live-" + std::to_string(next), text.title, text.body);
+                next++;
+                added.store(next, std::memory_order_relaxed);
+                if (next % 10 == 0) {
+                    if (index.remove("live-" + std::to_string(oldest))) {
+                        removed.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    oldest++;
+                }
+                for (const Clock::time_point until = Clock::now() + std::chrono::microseconds(options.writer_pause_us);
+                     Clock::now() < until;) {
+                    std::this_thread::yield();
+                }
+            }
+        } catch (...) {
+            writer_errors.fetch_add(1);
+        }
+    });
+    while (added.load() == 0 && writer_errors.load() == 0) {
+        std::this_thread::yield();
+    }
+    const std::vector<double> writing = timed_index_passes(index, keystrokes, options.passes, sink);
+    stop.store(true);
+    writer.join();
+    const double writing_seconds = microseconds(writing_start, Clock::now()) / 1e6;
+
+    const std::size_t docs_after = index.size();
+    const std::vector<double> grown = timed_index_passes(index, keystrokes, options.passes, sink);
+
+    const bool consistent = writer_errors.load() == 0 && added.load() > 0 &&
+                            docs_after == docs_before + added.load() - removed.load();
+    const double idle_p99 = percentile(idle, 0.99);
+    const double writing_p99 = percentile(writing, 0.99);
+    const double grown_p99 = percentile(grown, 0.99);
+    std::cout << "indexing luxcore::Index docs=" << options.docs << " bm25=1 fuzzy=1 stop=0 writer_pause_us="
+              << options.writer_pause_us << " build_ms=" << build_ms << " sink=" << sink << "\n";
+    print_latency("idle          ", idle);
+    print_latency("while_writing ", writing);
+    print_latency("idle_grown    ", grown);
+    std::cout << "indexing writer added=" << added.load() << " removed=" << removed.load()
+              << " docs_before=" << docs_before << " docs_after=" << docs_after << " seconds=" << writing_seconds
+              << " adds_per_s=" << static_cast<double>(added.load()) / writing_seconds
+              << " errors=" << writer_errors.load() << " consistent=" << (consistent ? 1 : 0) << "\n";
+    std::cout << "indexing METRIC idle_p99_us=" << idle_p99 << " writing_p99_us=" << writing_p99
+              << " grown_p99_us=" << grown_p99 << " p99_ratio_writing_over_idle=" << writing_p99 / idle_p99
+              << " p99_ratio_writing_over_grown=" << writing_p99 / grown_p99 << "\n";
+    return consistent;
+}
+
 Options parse(int argc, char** argv) {
     Options options;
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -310,6 +435,8 @@ Options parse(int argc, char** argv) {
         if (flag == "--stop") options.stop = static_cast<int>(value);
         if (flag == "--removes") options.removes = static_cast<int>(value);
         if (flag == "--fuzzy") options.fuzzy = static_cast<int>(value);
+        if (flag == "--indexing") options.indexing = static_cast<int>(value);
+        if (flag == "--writer_pause_us") options.writer_pause_us = static_cast<int>(value);
         if (flag == "--seed") options.seed = static_cast<std::uint64_t>(value);
     }
     return options;
@@ -333,6 +460,7 @@ int main(int argc, char** argv) {
     }
 
     Indexer indexer(options.stop > 0 ? stop_file.string() : "");
+    const std::mt19937_64 corpus_rng = rng;
     const Clock::time_point build_start = Clock::now();
     build_corpus(indexer, words, zipf, rng, options.docs);
     const double build_ms = microseconds(build_start, Clock::now()) / 1000.0;
@@ -423,5 +551,6 @@ int main(int argc, char** argv) {
                   << "  p50_us=" << std::setw(9) << percentile(in_bucket, 0.50)
                   << "  p99_us=" << std::setw(9) << percentile(in_bucket, 0.99) << "\n";
     }
-    return audit.errors == 0 && persistence.mismatches == 0 ? 0 : 1;
+    const bool indexing_ok = options.indexing == 0 || measure_indexing(options, words, zipf, corpus_rng, keystrokes);
+    return audit.errors == 0 && persistence.mismatches == 0 && indexing_ok ? 0 : 1;
 }

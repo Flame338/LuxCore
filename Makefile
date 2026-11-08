@@ -30,6 +30,8 @@ else
 endif
 CFLAGS += $(EXTRA_CFLAGS)
 
+LINK_FLAGS := -pthread $(EXTRA_LDFLAGS)
+
 SHARED_CXXFLAGS := -DLUX_BUILD_SHARED -fvisibility=hidden
 SHARED_LDFLAGS  :=
 ifeq ($(OS),Windows_NT)
@@ -76,26 +78,26 @@ clean:
 	rm -rf build
 
 $(EXE): $(APP_OBJS)
-	$(CXX) $(APP_OBJS) -o $@
+	$(CXX) $(APP_OBJS) $(LINK_FLAGS) -o $@
 
 $(TEST_EXE): $(TEST_OBJS) $(LIB_OBJS)
-	$(CXX) $(TEST_OBJS) $(LIB_OBJS) -o $@
+	$(CXX) $(TEST_OBJS) $(LIB_OBJS) $(LINK_FLAGS) -o $@
 
 $(BENCH_EXE): $(BUILD)/bench/bench.o $(LIB_OBJS)
-	$(CXX) $(BUILD)/bench/bench.o $(LIB_OBJS) -o $@
+	$(CXX) $(BUILD)/bench/bench.o $(LIB_OBJS) $(LINK_FLAGS) -o $@
 
 $(LIB): $(LIB_OBJS)
 	rm -f $@
 	ar rcs $@ $(LIB_OBJS)
 
 $(SHARED): $(SHARED_OBJS)
-	$(CXX) -shared $(SHARED_OBJS) $(SHARED_LDFLAGS) -o $@
+	$(CXX) -shared $(SHARED_OBJS) $(SHARED_LDFLAGS) $(LINK_FLAGS) -o $@
 
 $(C_TEST_EXE): $(C_TEST_OBJ) $(LIB)
-	$(CXX) $(C_TEST_OBJ) $(LIB) -o $@
+	$(CXX) $(C_TEST_OBJ) $(LIB) $(LINK_FLAGS) -o $@
 
 $(EXAMPLE_EXE): $(BUILD)/examples/search.o $(LIB)
-	$(CXX) $(BUILD)/examples/search.o $(LIB) -o $@
+	$(CXX) $(BUILD)/examples/search.o $(LIB) $(LINK_FLAGS) -o $@
 
 $(BUILD)/examples/%.o: examples/%.cpp
 	@mkdir -p $(dir $@)
