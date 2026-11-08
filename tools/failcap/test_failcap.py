@@ -184,6 +184,7 @@ class MainTests(unittest.TestCase):
             rows = self.read_log(path)
             self.assertEqual([r["tool_use_id"] for r in rows], ["toolu_1", "toolu_2"])
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes are not meaningful on Windows")
     def test_log_is_private(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, path = self.run_main(json.dumps(failure()).encode(), tmp)
@@ -222,11 +223,260 @@ class MainTests(unittest.TestCase):
             self.assertTrue(os.path.exists(path + ".1"))
             self.assertEqual([r["tool_use_id"] for r in self.read_log(path)], ["toolu_2"])
 
-    def test_default_path_uses_project_dir(self):
+    def test_default_path_is_central_under_config_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = {"CLAUDE_PROJECT_DIR": tmp}
+            env = {"CLAUDE_CONFIG_DIR": tmp}
             failcap.main(io.BytesIO(json.dumps(failure()).encode()), env)
-            self.assertTrue(os.path.exists(os.path.join(tmp, ".claude", "failcap", "failures.jsonl")))
+            self.assertTrue(os.path.exists(os.path.join(tmp, "failcap", "failures.jsonl")))
+
+    def test_failcap_log_overrides_config_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "custom.jsonl")
+            env = {"CLAUDE_CONFIG_DIR": os.path.join(tmp, "cfg"), "FAILCAP_LOG": target}
+            failcap.main(io.BytesIO(json.dumps(failure()).encode()), env)
+            self.assertTrue(os.path.exists(target))
+            self.assertFalse(os.path.exists(os.path.join(tmp, "cfg")))
+
+
+class ProjectTests(unittest.TestCase):
+    def make_repo(self, tmp, *parts):
+        path = os.path.join(tmp, *parts)
+        os.makedirs(os.path.join(path, ".git"))
+        return path
+
+    def test_find_project_walks_up_to_git_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp, "work", "myrepo")
+            sub = os.path.join(repo, "src", "deep")
+            os.makedirs(sub)
+            root, ignored = failcap.find_project(sub)
+            self.assertEqual(root, os.path.abspath(repo))
+            self.assertFalse(ignored)
+            self.assertEqual(failcap.project_name(root, sub), "myrepo")
+
+    def test_git_worktree_file_counts_as_a_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = os.path.join(tmp, "wt")
+            os.makedirs(wt)
+            with open(os.path.join(wt, ".git"), "w") as fh:
+                fh.write("gitdir: /elsewhere\n")
+            self.assertEqual(failcap.find_project(wt)[0], os.path.abspath(wt))
+
+    def test_no_git_falls_back_to_directory_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = os.path.join(tmp, "scratchdir")
+            os.makedirs(plain)
+            root, _ = failcap.find_project(plain)
+            self.assertIsNone(root)
+            self.assertEqual(failcap.project_name(root, plain), "scratchdir")
+
+    def test_ignore_marker_in_project_and_in_a_parent_above_the_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp, "clients", "acme")
+            sub = os.path.join(repo, "src")
+            os.makedirs(sub)
+            self.assertFalse(failcap.find_project(sub)[1])
+            open(os.path.join(tmp, "clients", failcap.IGNORE_MARKER), "w").close()
+            root, ignored = failcap.find_project(sub)
+            self.assertTrue(ignored)
+            self.assertEqual(root, os.path.abspath(repo))
+
+    def test_record_carries_project_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp, "luxvec")
+            log = os.path.join(tmp, "out.jsonl")
+            failcap.main(
+                io.BytesIO(json.dumps(failure(cwd=os.path.join(repo, "src"))).encode()),
+                {"FAILCAP_LOG": log},
+            )
+            with open(log, encoding="utf-8") as fh:
+                self.assertEqual(json.loads(fh.readline())["project"], "luxvec")
+
+    def test_claude_project_dir_wins_over_a_subdirectory_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp, "game")
+            sub = os.path.join(repo, "tools")
+            os.makedirs(sub)
+            log = os.path.join(tmp, "out.jsonl")
+            env = {"FAILCAP_LOG": log, "CLAUDE_PROJECT_DIR": repo}
+            failcap.main(io.BytesIO(json.dumps(failure(cwd=sub)).encode()), env)
+            with open(log, encoding="utf-8") as fh:
+                self.assertEqual(json.loads(fh.readline())["project"], "game")
+
+    def test_marker_suppresses_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp, "private")
+            open(os.path.join(repo, failcap.IGNORE_MARKER), "w").close()
+            log = os.path.join(tmp, "out.jsonl")
+            failcap.main(io.BytesIO(json.dumps(failure(cwd=repo)).encode()), {"FAILCAP_LOG": log})
+            self.assertFalse(os.path.exists(log))
+
+    def test_env_disable_suppresses_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = os.path.join(tmp, "out.jsonl")
+            for value in ("1", "true", "yes"):
+                failcap.main(io.BytesIO(json.dumps(failure()).encode()), {"FAILCAP_LOG": log, "FAILCAP_DISABLE": value})
+            self.assertFalse(os.path.exists(log))
+            # 0 / empty / false do not disable
+            failcap.main(io.BytesIO(json.dumps(failure()).encode()), {"FAILCAP_LOG": log, "FAILCAP_DISABLE": "0"})
+            self.assertTrue(os.path.exists(log))
+
+
+class InstallerTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = self._tmp.name
+        self.settings = os.path.join(self.tmp, "cfg", "settings.json")
+        self.env = {"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cfg")}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        code = failcap.cli(list(argv), self.env, out)
+        return code, out.getvalue()
+
+    def read(self):
+        with open(self.settings, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def write(self, data):
+        os.makedirs(os.path.dirname(self.settings), exist_ok=True)
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def failcap_hooks(self, data):
+        return [
+            h
+            for g in data.get("hooks", {}).get(failcap.HOOK_EVENT, [])
+            for h in g["hooks"]
+            if failcap._is_failcap_hook(h)
+        ]
+
+    def test_install_creates_settings_with_exec_form_hook(self):
+        code, _ = self.run_cli("install", "--settings", self.settings, "--python", "py")
+        self.assertEqual(code, 0)
+        hooks = self.failcap_hooks(self.read())
+        self.assertEqual(len(hooks), 1)
+        self.assertEqual(hooks[0]["type"], "command")
+        self.assertEqual(hooks[0]["command"], "py")
+        self.assertEqual(hooks[0]["args"], [os.path.abspath(failcap.__file__)])
+        self.assertTrue(os.path.isabs(hooks[0]["args"][0]))
+
+    def test_install_defaults_to_sys_executable_and_config_dir(self):
+        code, _ = self.run_cli("install")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.failcap_hooks(self.read())[0]["command"], sys.executable)
+
+    def test_install_preserves_everything_else(self):
+        other = {"type": "command", "command": "echo mine"}
+        self.write(
+            {
+                "model": "sonnet",
+                "permissions": {"allow": ["Bash(git *)"]},
+                "hooks": {
+                    "PreToolUse": [{"matcher": "Bash", "hooks": [other]}],
+                    failcap.HOOK_EVENT: [{"hooks": [{"type": "command", "command": "echo also-mine"}]}],
+                },
+            }
+        )
+        self.run_cli("install", "--settings", self.settings)
+        data = self.read()
+        self.assertEqual(data["model"], "sonnet")
+        self.assertEqual(data["permissions"], {"allow": ["Bash(git *)"]})
+        self.assertEqual(data["hooks"]["PreToolUse"], [{"matcher": "Bash", "hooks": [other]}])
+        commands = [h.get("command") for g in data["hooks"][failcap.HOOK_EVENT] for h in g["hooks"]]
+        self.assertIn("echo also-mine", commands)
+        self.assertEqual(len(self.failcap_hooks(data)), 1)
+
+    def test_install_is_idempotent_and_replaces_old_shell_form(self):
+        old = {"type": "command", "command": 'python3 "/old/place/tools/failcap/failcap.py"'}
+        self.write({"hooks": {failcap.HOOK_EVENT: [{"hooks": [old]}]}})
+        self.run_cli("install", "--settings", self.settings)
+        self.run_cli("install", "--settings", self.settings)
+        hooks = self.failcap_hooks(self.read())
+        self.assertEqual(len(hooks), 1)
+        self.assertNotIn("/old/place", json.dumps(self.read()))
+
+    def test_install_keeps_other_hooks_in_the_same_group(self):
+        mine = {"type": "command", "command": "echo mine"}
+        old = {"type": "command", "command": "python3 /x/failcap.py"}
+        self.write({"hooks": {failcap.HOOK_EVENT: [{"matcher": "Bash", "hooks": [old, mine]}]}})
+        self.run_cli("install", "--settings", self.settings)
+        groups = self.read()["hooks"][failcap.HOOK_EVENT]
+        self.assertEqual(groups[0], {"matcher": "Bash", "hooks": [mine]})
+        self.assertEqual(len(self.failcap_hooks(self.read())), 1)
+
+    def test_dry_run_writes_nothing(self):
+        code, out = self.run_cli("install", "--settings", self.settings, "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("failcap.py", out)
+        self.assertFalse(os.path.exists(self.settings))
+
+    def test_refuses_invalid_json_without_modifying_it(self):
+        os.makedirs(os.path.dirname(self.settings))
+        with open(self.settings, "w") as fh:
+            fh.write('{"hooks": {oops')
+        code, _ = self.run_cli("install", "--settings", self.settings)
+        self.assertEqual(code, 1)
+        with open(self.settings) as fh:
+            self.assertEqual(fh.read(), '{"hooks": {oops')
+
+    def test_refuses_unexpected_shapes(self):
+        for bad in ([1, 2], {"hooks": []}, {"hooks": {failcap.HOOK_EVENT: "nope"}}):
+            self.write(bad)
+            code, _ = self.run_cli("install", "--settings", self.settings)
+            self.assertEqual(code, 1, bad)
+            self.assertEqual(self.read(), bad)
+
+    def test_reads_utf8_bom_and_empty_files(self):
+        os.makedirs(os.path.dirname(self.settings))
+        with open(self.settings, "wb") as fh:
+            fh.write(b"\xef\xbb\xbf" + json.dumps({"model": "sonnet"}).encode())
+        self.assertEqual(self.run_cli("install", "--settings", self.settings)[0], 0)
+        self.assertEqual(self.read()["model"], "sonnet")
+        with open(self.settings, "w") as fh:
+            fh.write("   \n")
+        self.assertEqual(self.run_cli("install", "--settings", self.settings)[0], 0)
+
+    def test_first_backup_is_kept_and_not_overwritten(self):
+        self.write({"model": "original"})
+        self.run_cli("install", "--settings", self.settings)
+        self.run_cli("install", "--settings", self.settings)
+        with open(self.settings + ".failcap.bak", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), {"model": "original"})
+
+    def test_uninstall_removes_only_failcap_and_cleans_up(self):
+        self.run_cli("install", "--settings", self.settings)
+        self.assertEqual(self.run_cli("uninstall", "--settings", self.settings)[0], 0)
+        self.assertEqual(self.read(), {})
+
+        keep = {"type": "command", "command": "echo keep"}
+        self.write({"model": "m", "hooks": {"Stop": [{"hooks": [keep]}]}})
+        self.run_cli("install", "--settings", self.settings)
+        self.run_cli("uninstall", "--settings", self.settings)
+        self.assertEqual(self.read(), {"model": "m", "hooks": {"Stop": [{"hooks": [keep]}]}})
+
+    def test_uninstall_when_absent_is_a_no_op(self):
+        self.write({"model": "m"})
+        code, out = self.run_cli("uninstall", "--settings", self.settings)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to do", out)
+        self.assertEqual(self.read(), {"model": "m"})
+        self.assertFalse(os.path.exists(self.settings + ".failcap.bak"))
+
+    def test_status_reports_hook_and_log(self):
+        _, out = self.run_cli("status", "--settings", self.settings)
+        self.assertIn("NOT installed", out)
+        self.assertIn("no log yet", out)
+
+        self.run_cli("install", "--settings", self.settings)
+        failcap.main(io.BytesIO(json.dumps(failure()).encode()), self.env)
+        _, out = self.run_cli("status", "--settings", self.settings)
+        self.assertIn("hook installed", out)
+        self.assertIn("1 records", out)
+        self.assertIn("Bash", out)
 
 
 if __name__ == "__main__":
