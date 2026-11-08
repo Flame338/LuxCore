@@ -15,11 +15,12 @@ constexpr std::uint32_t format_version = 1;
 constexpr std::size_t header_size = 16;
 
 struct Prepared {
-    FieldTermPositions field_term_positions;
+    FieldTermPositions positioned;
+    FieldTermFreqs counted;
     Document stored;
 };
 
-Prepared prepare(const Analyzer& analyzer, const Document& document) {
+Prepared prepare(const Analyzer& analyzer, const Document& document, bool positions) {
     Prepared prepared;
     std::unordered_map<std::string, std::uint32_t> next_base;
     for (const Field& field : document.get_fields()) {
@@ -29,12 +30,20 @@ Prepared prepare(const Analyzer& analyzer, const Document& document) {
                 std::uint32_t end = base;
                 for (const Token& token : analyzer.analyze_tokens(field.value)) {
                     const std::uint32_t position = base + static_cast<std::uint32_t>(token.position);
-                    prepared.field_term_positions[field.name][token.term].push_back(position);
+                    if (positions) {
+                        prepared.positioned[field.name][token.term].push_back(position);
+                    } else {
+                        prepared.counted[field.name][token.term]++;
+                    }
                     end = position + 2;
                 }
                 next_base[field.name] = end;
             } else if (!field.value.empty()) {
-                prepared.field_term_positions[field.name][field.value].push_back(base);
+                if (positions) {
+                    prepared.positioned[field.name][field.value].push_back(base);
+                } else {
+                    prepared.counted[field.name][field.value]++;
+                }
                 next_base[field.name] = base + 2;
             }
         }
@@ -47,13 +56,17 @@ Prepared prepare(const Analyzer& analyzer, const Document& document) {
 
 }
 
-Indexer::Indexer(const std::string& stop_words_path)
-    : analyzer(make_standard_analyzer(stop_words_path)) {}
+Indexer::Indexer(const std::string& stop_words_path, IndexOptions options)
+    : options(options), analyzer(make_standard_analyzer(stop_words_path)) {}
 
 int Indexer::add_document(const Document& document) {
-    Prepared prepared = prepare(analyzer, document);
+    Prepared prepared = prepare(analyzer, document, options.positions);
     const int id = doc_store.add(std::move(prepared.stored));
-    inverted_index.add_document(id, prepared.field_term_positions);
+    if (options.positions) {
+        inverted_index.add_document(id, prepared.positioned);
+    } else {
+        inverted_index.add_document(id, prepared.counted);
+    }
     return id;
 }
 
@@ -74,9 +87,13 @@ bool Indexer::update_document(int id, const Document& document) {
     if (!doc_store.contains(id)) {
         return false;
     }
-    Prepared prepared = prepare(analyzer, document);
+    Prepared prepared = prepare(analyzer, document, options.positions);
     doc_store.replace(id, std::move(prepared.stored));
-    inverted_index.add_document(id, prepared.field_term_positions);
+    if (options.positions) {
+        inverted_index.add_document(id, prepared.positioned);
+    } else {
+        inverted_index.add_document(id, prepared.counted);
+    }
     return true;
 }
 
@@ -109,7 +126,7 @@ std::string Indexer::serialize() const {
     return file.take();
 }
 
-Indexer Indexer::deserialize(std::string_view data, const std::string& stop_words_path) {
+Indexer Indexer::deserialize(std::string_view data, const std::string& stop_words_path, IndexOptions options) {
     ByteReader reader(data);
     if (data.size() < 8) {
         fail_format("file is too short to be a LuxCore index");
@@ -131,10 +148,10 @@ Indexer Indexer::deserialize(std::string_view data, const std::string& stop_word
                     " bytes of content and the file holds " + std::to_string(reader.remaining()));
     }
 
-    Indexer indexer(stop_words_path);
+    Indexer indexer(stop_words_path, options);
     indexer.doc_store = DocumentStore::read(reader);
     indexer.doc_keys = DocumentKeys::read(reader, indexer.doc_store);
-    indexer.inverted_index = InvertedIndex::read(reader, indexer.doc_store);
+    indexer.inverted_index = InvertedIndex::read(reader, indexer.doc_store, options.positions);
     if (!reader.at_end()) {
         fail_format("unexpected bytes after the index");
     }

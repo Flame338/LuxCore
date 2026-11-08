@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <optional>
 #include <queue>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -75,7 +76,8 @@ private:
     double idf(std::size_t doc_freq) const;
     double term_idf(const std::string& term) const;
     double weighted_tf(std::string_view field, int doc_id, double frequency) const;
-    double weighted_tf(std::string_view field, int doc_id, double frequency, double boost, double average_length) const;
+    double weighted_tf(std::span<const int> lengths, int doc_id, double frequency, double boost,
+                       double average_length) const;
     double average_length(std::string_view field) const;
     double combine(double term_idf, double tf) const;
     ScoredDocs score_by_doc(const std::string& term) const;

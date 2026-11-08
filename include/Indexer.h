@@ -10,15 +10,20 @@
 #include <string>
 #include <string_view>
 
+struct IndexOptions {
+    bool positions = true;
+};
+
 class Indexer {
 private:
+    IndexOptions options;
     Analyzer analyzer;
     InvertedIndex inverted_index;
     DocumentStore doc_store;
     DocumentKeys doc_keys;
 
 public:
-    explicit Indexer(const std::string& stop_words_path = "");
+    explicit Indexer(const std::string& stop_words_path = "", IndexOptions options = {});
 
     int add_document(const Document& document);
     int add_document(const std::string& key, const Document& document);
@@ -34,7 +39,9 @@ public:
     const DocumentKeys& get_keys() const { return doc_keys; }
     const Document& get_document(int id) const { return doc_store.get(id); }
     const Analyzer& get_analyzer() const { return analyzer; }
+    const IndexOptions& get_options() const { return options; }
 
     std::string serialize() const;
-    static Indexer deserialize(std::string_view data, const std::string& stop_words_path = "");
+    static Indexer deserialize(std::string_view data, const std::string& stop_words_path = "",
+                               IndexOptions options = {});
 };

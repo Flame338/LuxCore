@@ -85,18 +85,20 @@ double TermScorer::average_length(std::string_view field) const {
     return scoring.scorer == Scorer::Bm25 ? scope.index.get_average_field_length(field) : 0.0;
 }
 
-double TermScorer::weighted_tf(std::string_view field, int doc_id, double frequency, double boost,
+double TermScorer::weighted_tf(std::span<const int> lengths, int doc_id, double frequency, double boost,
                                double average_length) const {
     double tf = frequency * boost;
     if (scoring.scorer == Scorer::Bm25 && average_length > 0.0) {
-        const double length = scope.index.get_field_length(field, doc_id);
+        const std::size_t slot = static_cast<std::size_t>(doc_id);
+        const double length = slot < lengths.size() ? lengths[slot] : 0;
         tf /= 1.0 - scoring.bm25.b + scoring.bm25.b * length / average_length;
     }
     return tf;
 }
 
 double TermScorer::weighted_tf(std::string_view field, int doc_id, double frequency) const {
-    return weighted_tf(field, doc_id, frequency, scope.boosts.get(field), average_length(field));
+    return weighted_tf(scope.index.get_field_lengths(field), doc_id, frequency, scope.boosts.get(field),
+                       average_length(field));
 }
 
 double TermScorer::combine(double term_idf, double tf) const {
@@ -116,6 +118,7 @@ ScoredDocs TermScorer::score_by_doc(const std::string& term) const {
     scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
                                             double boost) {
         const double field_average = average_length(field_name);
+        const std::span<const int> lengths = scope.index.get_field_lengths(field_name);
         merged.clear();
         merged.reserve(summed.size() + field_postings.size());
         auto known = summed.begin();
@@ -123,7 +126,7 @@ ScoredDocs TermScorer::score_by_doc(const std::string& term) const {
             for (; known != summed.end() && known->doc_id < posting.doc_id; ++known) {
                 merged.push_back(*known);
             }
-            const double tf = weighted_tf(field_name, posting.doc_id, static_cast<double>(posting.term_frequency),
+            const double tf = weighted_tf(lengths, posting.doc_id, static_cast<double>(posting.term_frequency),
                                           boost, field_average);
             if (known != summed.end() && known->doc_id == posting.doc_id) {
                 merged.push_back({posting.doc_id, known->score + tf});

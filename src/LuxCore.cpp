@@ -20,7 +20,7 @@
 namespace luxcore {
 
 struct Index::Impl {
-    Indexer indexer;
+    Indexer indexer{std::string(), IndexOptions{.positions = false}};
     mutable FairSharedMutex mutex;
 
     Searcher searcher() const {
@@ -134,7 +134,7 @@ Index Index::load(const std::string& path) {
 
     Index index;
     try {
-        index.impl->indexer = Indexer::deserialize(bytes);
+        index.impl->indexer = Indexer::deserialize(bytes, std::string(), IndexOptions{.positions = false});
     } catch (const std::runtime_error& error) {
         throw FormatError(error.what());
     }
