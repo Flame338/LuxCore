@@ -1,6 +1,7 @@
 #include "LuxCore.h"
 
 #include "EditDistance.h"
+#include "FairSharedMutex.h"
 #include "Indexer.h"
 #include "Scoring.h"
 #include "Searcher.h"
@@ -10,6 +11,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -18,6 +21,7 @@ namespace luxcore {
 
 struct Index::Impl {
     Indexer indexer;
+    mutable FairSharedMutex mutex;
 
     Searcher searcher() const {
         return Searcher(indexer, {.scoring = Scoring::bm25_with(), .fuzziness = Fuzziness::On});
@@ -41,18 +45,23 @@ Index::Index(Index&&) noexcept = default;
 Index& Index::operator=(Index&&) noexcept = default;
 
 void Index::add(const std::string& key, const std::string& title, const std::string& body) {
-    impl->indexer.add_document(key, make_text_document(title, body));
+    const Document document = make_text_document(title, body);
+    std::unique_lock lock(impl->mutex);
+    impl->indexer.add_document(key, document);
 }
 
 bool Index::remove(const std::string& key) {
+    std::unique_lock lock(impl->mutex);
     return impl->indexer.remove_document(key);
 }
 
 std::size_t Index::size() const {
+    std::shared_lock lock(impl->mutex);
     return static_cast<std::size_t>(impl->indexer.get_index().get_total_documents());
 }
 
 std::optional<std::string> Index::stored(const std::string& key, const std::string& field) const {
+    std::shared_lock lock(impl->mutex);
     const std::optional<int> id = impl->indexer.find_id(key);
     if (!id) {
         return std::nullopt;
@@ -65,6 +74,7 @@ std::optional<std::string> Index::stored(const std::string& key, const std::stri
 }
 
 std::vector<Hit> Index::search(const std::string& query, std::size_t limit) const {
+    std::shared_lock lock(impl->mutex);
     std::vector<Hit> hits;
     for (const SearchHit& hit : impl->searcher().search(query, clamp_to_int(limit))) {
         hits.push_back({hit.key, hit.score});
@@ -73,6 +83,7 @@ std::vector<Hit> Index::search(const std::string& query, std::size_t limit) cons
 }
 
 std::vector<std::string> Index::suggest(const std::string& query, std::size_t limit) const {
+    std::shared_lock lock(impl->mutex);
     std::vector<std::string> terms;
     for (const Suggestion& suggestion : impl->searcher().suggest(query, limit)) {
         terms.push_back(suggestion.term);
@@ -81,7 +92,11 @@ std::vector<std::string> Index::suggest(const std::string& query, std::size_t li
 }
 
 void Index::save(const std::string& path) const {
-    const std::string bytes = impl->indexer.serialize();
+    std::string bytes;
+    {
+        std::shared_lock lock(impl->mutex);
+        bytes = impl->indexer.serialize();
+    }
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
         throw std::runtime_error("LuxCore: cannot open " + path + " for writing");
