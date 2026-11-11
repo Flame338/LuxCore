@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct AnalyzedQuery {
@@ -30,7 +31,7 @@ public:
 
     std::vector<std::string> analyze(const std::string& text) const;
     AnalyzedQuery analyze_query(const std::string& text) const;
-    std::vector<Token> analyze_tokens(const std::string& text) const;
+    std::vector<Token> analyze_tokens(std::string_view text) const;
     AnalyzedTokenQuery analyze_query_tokens(const std::string& text) const;
 };
 

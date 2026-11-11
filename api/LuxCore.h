@@ -5,6 +5,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace luxcore {
@@ -44,6 +45,25 @@ struct SnippetOptions {
     std::string ellipsis = "...";
 };
 
+struct PrepareOptions {
+    bool store_body = true;
+};
+
+class Prepared {
+public:
+    ~Prepared();
+    Prepared(Prepared&&) noexcept;
+    Prepared& operator=(Prepared&&) noexcept;
+    Prepared(const Prepared&) = delete;
+    Prepared& operator=(const Prepared&) = delete;
+
+private:
+    friend class Index;
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+    explicit Prepared(std::unique_ptr<Impl> impl);
+};
+
 class Index {
 public:
     Index();
@@ -55,6 +75,8 @@ public:
     Index& operator=(const Index&) = delete;
 
     void add(const std::string& key, const std::string& title, const std::string& body);
+    Prepared prepare(std::string_view title, std::string_view body, PrepareOptions options = {}) const;
+    void commit(const std::string& key, Prepared prepared);
     bool remove(const std::string& key);
     std::size_t size() const;
 
@@ -67,6 +89,12 @@ public:
                                        const SnippetOptions& options = {}) const;
     std::optional<std::string> snippet_query(const std::string& key, const std::string& field, const std::string& text,
                                              const SnippetOptions& options = {}) const;
+
+    std::string snippet_text(std::string_view body, const std::string& text, const SnippetOptions& options = {}) const;
+    std::string snippet_text_query(std::string_view body, const std::string& text,
+                                   const SnippetOptions& options = {}) const;
+
+    std::string debug_stats() const;
 
     void save(const std::string& path) const;
     static Index load(const std::string& path, IndexConfig config = {});

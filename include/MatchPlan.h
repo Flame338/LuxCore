@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Analyzer.h"
-#include "FuzzyIndex.h"
+#include "TermTrie.h"
 #include "Query.h"
 
 #include <cstddef>

@@ -21,6 +21,6 @@ private:
 public:
     explicit Highlighter(HighlightOptions options = {});
 
-    std::string snippet(const std::string& stored_text, const MatchPlan& plan) const;
+    std::string snippet(std::string_view stored_text, const MatchPlan& plan) const;
     std::string snippet(const Document& document, std::string_view field, const MatchPlan& plan) const;
 };

@@ -1,6 +1,6 @@
 #include "TestFramework.h"
 
-#include "FuzzyIndex.h"
+#include "FuzzyTerms.h"
 #include "Indexer.h"
 #include "Searcher.h"
 
@@ -168,7 +168,7 @@ TEST(an_updated_documents_old_terms_stop_matching_fuzzily) {
 }
 
 TEST(fuzzy_index_removal_keeps_the_remaining_terms_and_reuses_nodes) {
-    FuzzyIndex fuzzy;
+    FuzzyTerms fuzzy;
     fuzzy.add("search");
     fuzzy.add("searching");
     fuzzy.add("seal");

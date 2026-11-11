@@ -903,6 +903,141 @@ static void snippet_query_offset_is_zero_unless_the_query_is_invalid(void) {
     lux_index_free(positional);
 }
 
+static int same_text(const lux_text* left, const lux_text* right) {
+    return left != NULL && right != NULL && lux_text_length(left) == lux_text_length(right) &&
+           memcmp(lux_text_data(left), lux_text_data(right), lux_text_length(left)) == 0;
+}
+
+static void snippet_text_matches_snippet_of_the_stored_body(void) {
+    static const char* const fuzzy[] = {"lucne ranks", "book", "edinbrgh", "milk eggs", "rainc", "nothing here", ""};
+    static const char* const syntax[] = {"+book OR ranks", "title:book", "body:train -raincoat", "lucene", "pack*"};
+    static const char* const keys[] = {"shopping", "reading", "trip"};
+    lux_snippet_options narrow = {12, "[", 1, "]", 1, "~", 1};
+    const lux_snippet_options* option_sets[2];
+    lux_index* index = notes();
+    size_t k, q, o;
+    option_sets[0] = NULL;
+    option_sets[1] = &narrow;
+
+    for (o = 0; o < 2; o++) {
+        for (k = 0; k < 3; k++) {
+            lux_text* body = NULL;
+            CHECK_STATUS(lux_index_stored(index, keys[k], strlen(keys[k]), STR("body"), &body), LUX_OK);
+            for (q = 0; q < sizeof(fuzzy) / sizeof(fuzzy[0]); q++) {
+                lux_text* from_key = NULL;
+                lux_text* from_text = NULL;
+                CHECK_STATUS(lux_index_snippet(index, keys[k], strlen(keys[k]), STR("body"), fuzzy[q], strlen(fuzzy[q]),
+                                               option_sets[o], &from_key),
+                             LUX_OK);
+                CHECK_STATUS(lux_index_snippet_text(index, lux_text_data(body), lux_text_length(body), fuzzy[q],
+                                                    strlen(fuzzy[q]), option_sets[o], &from_text),
+                             LUX_OK);
+                CHECK(same_text(from_key, from_text));
+                lux_text_free(from_key);
+                lux_text_free(from_text);
+            }
+            for (q = 0; q < sizeof(syntax) / sizeof(syntax[0]); q++) {
+                lux_text* from_key = NULL;
+                lux_text* from_text = NULL;
+                CHECK_STATUS(lux_index_snippet_query(index, keys[k], strlen(keys[k]), STR("body"), syntax[q],
+                                                     strlen(syntax[q]), option_sets[o], &from_key, NULL),
+                             LUX_OK);
+                CHECK_STATUS(lux_index_snippet_text_query(index, lux_text_data(body), lux_text_length(body), syntax[q],
+                                                          strlen(syntax[q]), option_sets[o], &from_text, NULL),
+                             LUX_OK);
+                CHECK(same_text(from_key, from_text));
+                lux_text_free(from_key);
+                lux_text_free(from_text);
+            }
+            lux_text_free(body);
+        }
+    }
+    lux_index_free(index);
+}
+
+static void snippet_text_query_reports_the_byte_offset_of_a_parse_failure(void) {
+    lux_index* index = notes();
+    lux_text* text = (lux_text*)index;
+    size_t offset = 99;
+    CHECK_STATUS(lux_index_snippet_text_query(index, STR("some text"), STR("book AND"), NULL, &text, &offset),
+                 LUX_INVALID_QUERY);
+    CHECK(text == NULL);
+    CHECK(offset == 8);
+    CHECK_STATUS(lux_index_snippet_text_query(index, STR("some book"), STR("book"), NULL, &text, &offset), LUX_OK);
+    CHECK(offset == 0);
+    CHECK(text_is(text, "some <em>book</em>"));
+    lux_text_free(text);
+    lux_index_free(index);
+}
+
+static void prepare_without_the_store_bit_indexes_the_body_but_does_not_store_it(void) {
+    lux_index* index = notes();
+    lux_prepared* prepared = NULL;
+    lux_text* text = NULL;
+    lux_hits* hits = NULL;
+    size_t size = 0;
+
+    CHECK_STATUS(lux_index_prepare(index, STR("Packing"), STR("raincoat umbrella wellies"), 0, &prepared), LUX_OK);
+    CHECK(prepared != NULL);
+    CHECK_STATUS(lux_index_commit(index, STR("packing"), prepared), LUX_OK);
+    CHECK_STATUS(lux_index_size(index, &size), LUX_OK);
+    CHECK(size == 4);
+
+    CHECK_STATUS(lux_index_search(index, STR("umbrella"), 10, &hits), LUX_OK);
+    CHECK(lux_hits_count(hits) == 1 && hit_is(hits, 0, "packing"));
+    lux_hits_free(hits);
+
+    CHECK_STATUS(lux_index_stored(index, STR("packing"), STR("title"), &text), LUX_OK);
+    CHECK(text_is(text, "Packing"));
+    lux_text_free(text);
+    CHECK_STATUS(lux_index_stored(index, STR("packing"), STR("body"), &text), LUX_NOT_FOUND);
+    CHECK_STATUS(lux_index_snippet(index, STR("packing"), STR("body"), STR("umbrella"), NULL, &text), LUX_NOT_FOUND);
+
+    CHECK_STATUS(lux_index_prepare(index, STR("Packing"), STR("stored this time"), LUX_PREPARE_STORE_BODY, &prepared),
+                 LUX_OK);
+    CHECK_STATUS(lux_index_commit(index, STR("packing"), prepared), LUX_OK);
+    CHECK_STATUS(lux_index_stored(index, STR("packing"), STR("body"), &text), LUX_OK);
+    CHECK(text_is(text, "stored this time"));
+    lux_text_free(text);
+    lux_index_free(index);
+}
+
+static void prepare_and_commit_reject_bad_arguments(void) {
+    lux_index* index = notes();
+    lux_prepared* prepared = (lux_prepared*)index;
+    lux_text* text = (lux_text*)index;
+    size_t size = 0;
+
+    CHECK_STATUS(lux_index_prepare(NULL, STR("t"), STR("b"), 0, &prepared), LUX_INVALID_ARGUMENT);
+    CHECK(prepared == NULL);
+    CHECK_STATUS(lux_index_prepare(index, NULL, 0, STR("b"), 0, &prepared), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_prepare(index, STR("t"), NULL, 0, 0, &prepared), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_prepare(index, STR("t"), STR("b"), 0, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_prepare(index, STR("t"), STR("b"), 2u, &prepared), LUX_INVALID_ARGUMENT);
+    CHECK(prepared == NULL);
+
+    CHECK_STATUS(lux_index_commit(index, STR("k"), NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_prepare(index, STR("t"), STR("b"), 0, &prepared), LUX_OK);
+    CHECK_STATUS(lux_index_commit(NULL, STR("k"), prepared), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_prepare(index, STR("t"), STR("b"), 0, &prepared), LUX_OK);
+    CHECK_STATUS(lux_index_commit(index, NULL, 0, prepared), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_prepare(index, STR("t"), STR("b"), 0, &prepared), LUX_OK);
+    CHECK_STATUS(lux_index_commit(index, "", 0, prepared), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_prepare(index, STR("t"), STR("b"), 0, &prepared), LUX_OK);
+    lux_prepared_free(prepared);
+    lux_prepared_free(NULL);
+    CHECK_STATUS(lux_index_size(index, &size), LUX_OK);
+    CHECK(size == 3);
+
+    CHECK_STATUS(lux_index_snippet_text(NULL, STR("a"), STR("a"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK(text == NULL);
+    CHECK_STATUS(lux_index_snippet_text(index, NULL, 0, STR("a"), NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_text(index, STR("a"), NULL, 0, NULL, &text), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_text(index, STR("a"), STR("a"), NULL, NULL), LUX_INVALID_ARGUMENT);
+    CHECK_STATUS(lux_index_snippet_text_query(index, NULL, 0, STR("a"), NULL, &text, NULL), LUX_INVALID_ARGUMENT);
+    lux_index_free(index);
+}
+
 static void new_functions_reject_null_arguments(void) {
     lux_index* index = notes();
     lux_hits* hits = (lux_hits*)index;
@@ -995,6 +1130,10 @@ int main(void) {
         {"snippet_query_reports_a_bad_query_as_invalid_query", snippet_query_reports_a_bad_query_as_invalid_query},
         {"snippet_query_reports_the_byte_offset_of_a_parse_failure", snippet_query_reports_the_byte_offset_of_a_parse_failure},
         {"snippet_query_offset_is_zero_unless_the_query_is_invalid", snippet_query_offset_is_zero_unless_the_query_is_invalid},
+        {"snippet_text_matches_snippet_of_the_stored_body", snippet_text_matches_snippet_of_the_stored_body},
+        {"snippet_text_query_reports_the_byte_offset_of_a_parse_failure", snippet_text_query_reports_the_byte_offset_of_a_parse_failure},
+        {"prepare_without_the_store_bit_indexes_the_body_but_does_not_store_it", prepare_without_the_store_bit_indexes_the_body_but_does_not_store_it},
+        {"prepare_and_commit_reject_bad_arguments", prepare_and_commit_reject_bad_arguments},
         {"new_functions_reject_null_arguments", new_functions_reject_null_arguments},
         {"every_status_has_a_message", every_status_has_a_message},
     };

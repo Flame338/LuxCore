@@ -1,7 +1,7 @@
 #include "TestFramework.h"
 
 #include "EditDistance.h"
-#include "FuzzyIndex.h"
+#include "FuzzyTerms.h"
 
 #include <algorithm>
 #include <random>
@@ -117,13 +117,13 @@ TEST(fuzzy_score_factor_ranks_closer_matches_higher) {
 }
 
 TEST(fuzzy_index_finds_the_pillar_example) {
-    const FuzzyIndex index(std::vector<std::string>{"search", "engine", "searcher", "banana", "seal"});
+    const FuzzyTerms index(std::vector<std::string>{"search", "engine", "searcher", "banana", "seal"});
     CHECK_EQ(describe(index.candidates("serch", 1)), std::string("search:1,"));
     CHECK_EQ(describe(index.candidates("engin", 1)), std::string("engine:1,"));
 }
 
 TEST(fuzzy_index_returns_the_exact_term_at_distance_zero) {
-    FuzzyIndex index;
+    FuzzyTerms index;
     index.add("search");
     index.add("search");
     index.add("sea");
@@ -133,22 +133,22 @@ TEST(fuzzy_index_returns_the_exact_term_at_distance_zero) {
 }
 
 TEST(fuzzy_index_orders_matches_by_distance_then_term) {
-    const FuzzyIndex index(std::vector<std::string>{"cat", "cut", "cart", "car", "dog"});
+    const FuzzyTerms index(std::vector<std::string>{"cat", "cut", "cart", "car", "dog"});
     CHECK_EQ(describe(index.candidates("cat", 1)), std::string("cat:0,car:1,cart:1,cut:1,"));
 }
 
 TEST(fuzzy_index_matches_accented_terms_across_code_points) {
-    const FuzzyIndex index(std::vector<std::string>{"caf\xC3\xA9", "cafes", "coffee"});
+    const FuzzyTerms index(std::vector<std::string>{"caf\xC3\xA9", "cafes", "coffee"});
     CHECK_EQ(describe(index.candidates("cafe", 1)), std::string("cafes:1,caf\xC3\xA9:1,"));
     CHECK_EQ(describe(index.candidates("caf\xC3\xA9", 0)), std::string("caf\xC3\xA9:0,"));
 }
 
 TEST(fuzzy_index_handles_empty_and_very_short_terms) {
-    const FuzzyIndex index(std::vector<std::string>{"", "a", "ab", "abc", "b"});
+    const FuzzyTerms index(std::vector<std::string>{"", "a", "ab", "abc", "b"});
     CHECK_EQ(describe(index.candidates("", 0)), std::string(":0,"));
     CHECK_EQ(describe(index.candidates("", 1)), std::string(":0,a:1,b:1,"));
     CHECK_EQ(describe(index.candidates("a", 1)), std::string("a:0,:1,ab:1,b:1,"));
-    CHECK_EQ(describe(FuzzyIndex().candidates("abc", 2)), std::string(""));
+    CHECK_EQ(describe(FuzzyTerms().candidates("abc", 2)), std::string(""));
 }
 
 TEST(fuzzy_index_agrees_with_a_brute_force_scan) {
@@ -157,7 +157,7 @@ TEST(fuzzy_index_agrees_with_a_brute_force_scan) {
     for (int i = 0; i < 400; i++) {
         terms.push_back(random_term(rng, 8));
     }
-    const FuzzyIndex index(terms);
+    const FuzzyTerms index(terms);
 
     for (int round = 0; round < 150; round++) {
         const std::string query = random_term(rng, 8);
@@ -170,7 +170,7 @@ TEST(fuzzy_index_agrees_with_a_brute_force_scan) {
 
 TEST(fuzzy_index_agrees_with_a_brute_force_scan_after_adds_and_removes) {
     std::mt19937 rng(7);
-    FuzzyIndex index;
+    FuzzyTerms index;
     std::set<std::string> live;
 
     for (int step = 0; step < 900; step++) {
@@ -212,7 +212,7 @@ TEST(fuzzy_index_agrees_with_a_brute_force_scan_on_longer_terms_and_larger_dista
     for (int i = 0; i < 500; i++) {
         terms.push_back(random_term(rng, 14));
     }
-    const FuzzyIndex index(terms);
+    const FuzzyTerms index(terms);
 
     for (int round = 0; round < 120; round++) {
         const std::string query = random_term(rng, 14);
@@ -226,7 +226,7 @@ TEST(fuzzy_index_agrees_with_a_brute_force_scan_on_longer_terms_and_larger_dista
 TEST(fuzzy_index_finds_terms_that_differ_only_at_the_ends) {
     const std::vector<std::string> terms{"search", "earch", "searc", "xsearch", "searchx", "xsearchx", "sarch",
                                          "searchxx", "xxsearch", "seaxrch"};
-    const FuzzyIndex index(terms);
+    const FuzzyTerms index(terms);
 
     for (std::size_t max_distance = 0; max_distance <= 3; max_distance++) {
         CHECK_EQ(describe(index.candidates("search", max_distance)), describe(brute_force(terms, "search", max_distance)));

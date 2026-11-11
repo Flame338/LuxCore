@@ -19,7 +19,7 @@ private:
 public:
     explicit IdentifierTokenizer(IdentifierOptions options = {});
 
-    std::vector<Token> tokenize_tokens(const std::string& text) const override;
+    std::vector<Token> tokenize_tokens(std::string_view text) const override;
 };
 
 Analyzer make_identifier_analyzer(IdentifierOptions options = {});

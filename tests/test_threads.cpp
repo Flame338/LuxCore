@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <random>
 #include <set>
@@ -495,4 +497,74 @@ TEST(threads_save_while_a_writer_adds_writes_a_loadable_snapshot) {
     CHECK_EQ(exceptions, 0);
     CHECK_EQ(save_errors.load(), 0);
     CHECK_EQ(bad_snapshots.load(), 0);
+}
+
+TEST(threads_prepare_on_many_threads_while_one_commits_and_one_searches) {
+    const Churn churn = make_churn();
+    constexpr int documents = 2000;
+    constexpr int preparers = 8;
+    luxcore::Index serial;
+    luxcore::Index index;
+    for (int a = 0; a < anchor_count; a++) {
+        serial.add(anchor_key(a), anchor_word(a), anchor_body(a));
+        index.add(anchor_key(a), anchor_word(a), anchor_body(a));
+    }
+    for (int i = 0; i < documents; i++) {
+        serial.add("churn-" + std::to_string(i), churn.titles[i], churn.first_bodies[i]);
+    }
+
+    std::vector<std::optional<luxcore::Prepared>> slots(documents);
+    std::vector<std::atomic<bool>> ready(documents);
+    std::atomic<int> next{0};
+    std::atomic<bool> committing{true};
+    std::atomic<int> missing_anchors{0};
+    std::atomic<long long> searches{0};
+
+    const int exceptions = run_threads(preparers + 2, [&](int thread) {
+        if (thread < preparers) {
+            for (int i = next.fetch_add(1); i < documents; i = next.fetch_add(1)) {
+                slots[i].emplace(index.prepare(churn.titles[i], churn.first_bodies[i]));
+                ready[i].store(true, std::memory_order_release);
+            }
+            return;
+        }
+        if (thread == preparers) {
+            for (int i = 0; i < documents; i++) {
+                while (!ready[i].load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                index.commit("churn-" + std::to_string(i), std::move(*slots[i]));
+            }
+            committing.store(false);
+            return;
+        }
+        for (int round = 0; committing.load() || round < 50; round++) {
+            const int a = round % anchor_count;
+            const std::vector<luxcore::Hit> hits = index.search(anchor_word(a), 5);
+            if (hits.empty() || hits.front().key != anchor_key(a)) {
+                missing_anchors.fetch_add(1);
+            }
+            index.search(churn.vocabulary[round % churn.vocabulary.size()], 10);
+            searches.fetch_add(1);
+        }
+    });
+
+    CHECK_EQ(exceptions, 0);
+    CHECK_EQ(missing_anchors.load(), 0);
+    CHECK(searches.load() >= 50);
+    CHECK_EQ(index.size(), serial.size());
+
+    const std::filesystem::path directory = std::filesystem::temp_directory_path();
+    const std::filesystem::path serial_file = directory / "luxcore_threads_prepare_serial.lux";
+    const std::filesystem::path prepared_file = directory / "luxcore_threads_prepare_prepared.lux";
+    serial.save(serial_file.string());
+    index.save(prepared_file.string());
+    const auto bytes_of = [](const std::filesystem::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    CHECK(bytes_of(serial_file) == bytes_of(prepared_file));
+    std::error_code ignored;
+    std::filesystem::remove(serial_file, ignored);
+    std::filesystem::remove(prepared_file, ignored);
 }

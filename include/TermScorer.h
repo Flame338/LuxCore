@@ -1,16 +1,17 @@
 #pragma once
 
-#include "FuzzyIndex.h"
 #include "InvertedIndex.h"
 #include "Scoring.h"
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 struct ScoredDoc {
@@ -18,7 +19,29 @@ struct ScoredDoc {
     double score;
 };
 
-using ScoredDocs = std::vector<ScoredDoc>;
+// Elements added by resize are left uninitialized: the scorer overwrites every one, and
+// zeroing a result of millions of postings first costs about as much as computing it.
+template <typename T>
+struct UninitializedAllocator : std::allocator<T> {
+    template <typename Other>
+    struct rebind {
+        using other = UninitializedAllocator<Other>;
+    };
+
+    using std::allocator<T>::allocator;
+
+    template <typename Other>
+    void construct(Other* place) noexcept {
+        ::new (static_cast<void*>(place)) Other;
+    }
+
+    template <typename Other, typename... Arguments>
+    void construct(Other* place, Arguments&&... arguments) {
+        ::new (static_cast<void*>(place)) Other(std::forward<Arguments>(arguments)...);
+    }
+};
+
+using ScoredDocs = std::vector<ScoredDoc, UninitializedAllocator<ScoredDoc>>;
 
 struct Scope {
     const InvertedIndex& index;
@@ -29,7 +52,7 @@ struct Scope {
         if (!field) {
             return index.get_document_frequency(term);
         }
-        const std::vector<Posting>* found = index.get_postings(*field, term);
+        const std::optional<Postings> found = index.get_postings(*field, term);
         return found ? found->size() : 0;
     }
 
@@ -44,13 +67,13 @@ struct Scope {
     template <typename Visit>
     void for_each_field_postings(const std::string& term, Visit&& visit) const {
         if (field) {
-            if (const std::vector<Posting>* found = index.get_postings(*field, term)) {
+            if (const std::optional<Postings> found = index.get_postings(*field, term)) {
                 visit(*field, *found, boosts.get(*field));
             }
             return;
         }
         for (const FieldPostings& entry : index.get_field_postings(term)) {
-            visit(entry.field, *entry.postings, boosts.get(entry.field));
+            visit(entry.field, entry.postings, boosts.get(entry.field));
         }
     }
 };

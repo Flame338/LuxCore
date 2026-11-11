@@ -125,3 +125,18 @@ DocumentKeys DocumentKeys::read(ByteReader& reader, const DocumentStore& store) 
     }
     return result;
 }
+
+void DocumentKeys::memory_stats(MemoryStats& out) const {
+    MemoryRow key_row{"keys.strings"};
+    key_row.items = live;
+    key_row.vector(keys);
+    for (const std::string& key : keys) {
+        key_row.string(key);
+    }
+    out.push_back(key_row);
+
+    MemoryRow table_row{"keys.table"};
+    table_row.items = table.size();
+    table_row.vector(table);
+    out.push_back(table_row);
+}

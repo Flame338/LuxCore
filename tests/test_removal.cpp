@@ -83,7 +83,7 @@ TEST(update_leaves_no_stale_postings) {
     CHECK_EQ(postings_text(indexer, "cat"), "-");
     CHECK_EQ(postings_text(indexer, "dog"), "(0:1)(1:1)");
     CHECK_EQ(postings_text(indexer, "fish"), "(0:1)");
-    CHECK(indexer.get_index().get_postings("title", "cat") == nullptr);
+    CHECK(!indexer.get_index().get_postings("title", "cat"));
     CHECK_EQ(indexer.get_index().get_total_documents(), 2);
     CHECK_EQ(indexer.get_index().get_unique_terms_count(), terms_before);
     CHECK_EQ(indexer.get_index().get_field_documents("title"), 2);

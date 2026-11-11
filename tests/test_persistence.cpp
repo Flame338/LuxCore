@@ -48,7 +48,7 @@ std::string describe_index(const InvertedIndex& index, int ids) {
             text += " " + std::to_string(index.get_field_length(field, id));
         }
         for (const TermPostings& match : index.terms_with_prefix(field, "")) {
-            const PostingList* list = index.get_posting_list(field, std::string(match.term));
+            const std::optional<PostingList> list = index.get_posting_list(field, match.term);
             text += "\n " + std::string(match.term) + ":";
             for (std::size_t i = 0; i < list->postings.size(); i++) {
                 text += "(" + std::to_string(list->postings[i].doc_id) + "x" +

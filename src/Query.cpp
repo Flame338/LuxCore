@@ -216,31 +216,31 @@ ScoredDocs PhraseQuery::execute(const QueryContext& context) const {
     }
     TermScorer::PhraseTally tally = scorer.phrase(words);
     for (const std::string_view field_name : fields_of(context, field)) {
-        std::vector<const PostingList*> lists;
+        std::vector<PostingList> lists;
         for (const PhraseTerm& phrase_term : terms) {
-            const PostingList* list = context.index.get_posting_list(field_name, phrase_term.term);
+            const std::optional<PostingList> list = context.index.get_posting_list(field_name, phrase_term.term);
             if (!list) {
                 break;
             }
-            lists.push_back(list);
+            lists.push_back(*list);
         }
         if (lists.size() != terms.size()) {
             continue;
         }
 
-        const std::size_t lead = std::ranges::min_element(lists, {}, [](const PostingList* list) {
-                                     return list->postings.size();
+        const std::size_t lead = std::ranges::min_element(lists, {}, [](const PostingList& list) {
+                                     return list.postings.size();
                                  }) - lists.begin();
         std::vector<std::span<const std::uint32_t>> positions(lists.size());
 
-        for (const Posting& candidate : lists[lead]->postings) {
+        for (const Posting candidate : lists[lead].postings) {
             bool present = true;
             for (std::size_t i = 0; i < lists.size() && present; i++) {
-                const std::vector<Posting>& postings = lists[i]->postings;
-                const auto found = std::ranges::lower_bound(postings, candidate.doc_id, {}, &Posting::doc_id);
-                present = found != postings.end() && found->doc_id == candidate.doc_id;
+                const Postings& postings = lists[i].postings;
+                const std::size_t found = postings.lower_bound(candidate.doc_id);
+                present = found != postings.size() && postings.doc_id(found) == candidate.doc_id;
                 if (present) {
-                    positions[i] = lists[i]->positions_of(found - postings.begin());
+                    positions[i] = lists[i].positions_of(found);
                 }
             }
             if (!present) {

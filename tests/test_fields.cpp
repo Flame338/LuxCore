@@ -25,13 +25,13 @@ std::string suggestions_text(const std::vector<Suggestion>& suggestions) {
 }
 
 std::string postings_of(const InvertedIndex& index, std::string_view field, const std::string& term) {
-    const std::vector<Posting>* postings = index.get_postings(field, term);
-    if (postings == nullptr) {
+    const std::optional<Postings> postings = index.get_postings(field, term);
+    if (!postings) {
         return "-";
     }
 
     std::string text;
-    for (const Posting& posting : *postings) {
+    for (const Posting posting : *postings) {
         text += "(" + std::to_string(posting.doc_id) + ":" + std::to_string(posting.term_frequency) + ")";
     }
     return text;

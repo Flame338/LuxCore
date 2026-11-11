@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Document.h"
+#include "MemoryStats.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +46,7 @@ private:
     void release(const Slot& slot);
     void compact_if_needed();
     void compact();
+    static void reserve_exactly(DocumentStore& store, ByteReader reader, std::uint64_t live_count);
 
 public:
     int add(const Document& document);
@@ -57,6 +59,7 @@ public:
     std::size_t size() const { return live; }
     std::size_t id_limit() const { return slots.size(); }
 
+    void memory_stats(MemoryStats& out) const;
     void write(ByteWriter& writer) const;
     static DocumentStore read(ByteReader& reader);
 };

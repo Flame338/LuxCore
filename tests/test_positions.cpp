@@ -8,8 +8,8 @@
 namespace {
 
 std::string positions_text(const InvertedIndex& index, std::string_view field, const std::string& term) {
-    const PostingList* list = index.get_posting_list(field, term);
-    if (list == nullptr) {
+    const std::optional<PostingList> list = index.get_posting_list(field, term);
+    if (!list) {
         return "-";
     }
 
@@ -110,8 +110,8 @@ TEST(a_document_added_without_positions_has_term_frequencies_but_no_positions) {
     InvertedIndex index;
     index.add_document(1, FieldTermFreqs{{"body", {{"fox", 2}}}});
 
-    const PostingList* list = index.get_posting_list("body", "fox");
-    CHECK(list != nullptr);
+    const std::optional<PostingList> list = index.get_posting_list("body", "fox");
+    CHECK(list.has_value());
     CHECK_EQ(list->postings[0].term_frequency, 2);
     CHECK(list->positions_of(0).empty());
 }
