@@ -8,43 +8,100 @@
 
 [[noreturn]] void fail_format(const std::string& message);
 
+class ByteSink {
+public:
+    virtual ~ByteSink() = default;
+    virtual void write(std::string_view bytes) = 0;
+    virtual void overwrite(std::uint64_t offset, std::string_view bytes) = 0;
+};
+
+class StringSink : public ByteSink {
+public:
+    std::string bytes;
+
+    void write(std::string_view more) override { bytes.append(more); }
+    void overwrite(std::uint64_t offset, std::string_view replacement) override {
+        bytes.replace(static_cast<std::size_t>(offset), replacement.size(), replacement);
+    }
+};
+
 class ByteWriter {
 private:
+    static constexpr std::size_t flush_size = 1 << 20;
+
     std::string buffer;
+    ByteSink* sink = nullptr;
+    std::uint64_t flushed = 0;
+
+    void put(std::uint8_t value) { buffer.push_back(static_cast<char>(value)); }
+
+    void spill() {
+        if (sink != nullptr && buffer.size() >= flush_size) {
+            flush();
+        }
+    }
 
 public:
+    ByteWriter() = default;
+    explicit ByteWriter(ByteSink& target) : sink(&target) { buffer.reserve(flush_size + 64); }
+
     void reserve(std::size_t size) { buffer.reserve(size); }
 
-    void u8(std::uint8_t value) { buffer.push_back(static_cast<char>(value)); }
+    void flush() {
+        if (sink != nullptr && !buffer.empty()) {
+            sink->write(buffer);
+            flushed += buffer.size();
+            buffer.clear();
+        }
+    }
+
+    void u8(std::uint8_t value) {
+        put(value);
+        spill();
+    }
 
     void u32(std::uint32_t value) {
         for (int shift = 0; shift < 32; shift += 8) {
-            u8(static_cast<std::uint8_t>(value >> shift));
+            put(static_cast<std::uint8_t>(value >> shift));
         }
+        spill();
     }
 
     void u64(std::uint64_t value) {
         for (int shift = 0; shift < 64; shift += 8) {
-            u8(static_cast<std::uint8_t>(value >> shift));
+            put(static_cast<std::uint8_t>(value >> shift));
         }
+        spill();
     }
 
     void varint(std::uint64_t value) {
         while (value >= 0x80) {
-            u8(static_cast<std::uint8_t>(value | 0x80));
+            put(static_cast<std::uint8_t>(value | 0x80));
             value >>= 7;
         }
-        u8(static_cast<std::uint8_t>(value));
+        put(static_cast<std::uint8_t>(value));
+        spill();
     }
 
     void string(std::string_view value) {
         varint(value.size());
-        buffer.append(value);
+        append(value);
     }
 
-    void append(std::string_view bytes) { buffer.append(bytes); }
+    void append(std::string_view bytes) {
+        if (sink != nullptr && buffer.size() + bytes.size() > flush_size) {
+            flush();
+            if (bytes.size() >= flush_size) {
+                sink->write(bytes);
+                flushed += bytes.size();
+                return;
+            }
+        }
+        buffer.append(bytes);
+        spill();
+    }
 
-    std::size_t size() const { return buffer.size(); }
+    std::uint64_t size() const { return flushed + buffer.size(); }
     const std::string& bytes() const { return buffer; }
     std::string take() { return std::move(buffer); }
 };

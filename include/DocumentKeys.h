@@ -1,5 +1,7 @@
 #pragma once
 
+#include "MemoryStats.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -56,6 +58,7 @@ public:
     void bind(const std::string& key, int id);
     void unbind(int id);
 
+    void memory_stats(MemoryStats& out) const;
     void write(ByteWriter& writer) const;
     static DocumentKeys read(ByteReader& reader, const DocumentStore& store);
 };

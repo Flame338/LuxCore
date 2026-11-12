@@ -53,10 +53,10 @@ TEST(positionless_indexer_keeps_no_positions) {
     CHECK(positioned.get_index().memory_usage().position_bytes > 0);
     CHECK_EQ(counted.get_index().memory_usage().position_bytes, static_cast<std::size_t>(0));
 
-    const PostingList* list = counted.get_index().get_posting_list("body", "cat");
-    CHECK(list != nullptr);
-    CHECK(list->offsets.empty());
-    CHECK(list->positions.empty());
+    const std::optional<PostingList> list = counted.get_index().get_posting_list("body", "cat");
+    CHECK(list.has_value());
+    CHECK(!list->has_positions(0));
+    CHECK(!list->has_positions(1));
     CHECK_EQ(list->postings.size(), static_cast<std::size_t>(2));
     CHECK(list->positions_of(0).empty());
     CHECK_EQ(list->postings[1].term_frequency, 3);
@@ -91,7 +91,7 @@ TEST(a_positioned_file_loads_without_positions_and_a_positionless_one_loads_with
 
     const Indexer stripped = Indexer::deserialize(full, "", IndexOptions{.positions = false});
     CHECK_EQ(stripped.get_index().memory_usage().position_bytes, static_cast<std::size_t>(0));
-    CHECK(stripped.get_index().get_posting_list("body", "cat")->offsets.empty());
+    CHECK(!stripped.get_index().get_posting_list("body", "cat")->has_positions(0));
     for (const char* query : {"cat", "dog", "tre", "cta"}) {
         CHECK_EQ(ranking(stripped, query), ranking(positioned, query));
     }
@@ -113,7 +113,7 @@ TEST(a_list_can_mix_documents_with_and_without_positions) {
     index.add_document(2, FieldTermFreqs{{"body", TermFreqs{{"cat", 1}}}});
     index.add_document(3, FieldTermPositions{{"body", TermPositions{{"cat", {7}}}}});
 
-    const PostingList* list = index.get_posting_list("body", "cat");
+    std::optional<PostingList> list = index.get_posting_list("body", "cat");
     CHECK_EQ(list->postings.size(), static_cast<std::size_t>(4));
     CHECK(!list->has_positions(0));
     CHECK(list->has_positions(1));
@@ -134,7 +134,7 @@ TEST(a_list_can_mix_documents_with_and_without_positions) {
     index.remove_document(3);
     index.remove_document(0);
     index.remove_document(2);
-    CHECK(index.get_posting_list("body", "cat") == nullptr);
+    CHECK(!index.get_posting_list("body", "cat"));
     CHECK_EQ(index.get_total_documents(), 0);
 }
 
@@ -150,6 +150,6 @@ TEST(the_public_index_saves_a_file_without_positions) {
 
     const Indexer loaded = Indexer::deserialize(bytes);
     CHECK_EQ(loaded.get_index().memory_usage().position_bytes, static_cast<std::size_t>(0));
-    CHECK(loaded.get_index().get_posting_list("body", "cat")->offsets.empty());
+    CHECK(!loaded.get_index().get_posting_list("body", "cat")->has_positions(0));
     CHECK_EQ(loaded.get_index().get_total_documents(), 2);
 }

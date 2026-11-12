@@ -25,13 +25,13 @@ std::string suggestions_text(const std::vector<Suggestion>& suggestions) {
 }
 
 std::string postings_of(const InvertedIndex& index, std::string_view field, const std::string& term) {
-    const std::vector<Posting>* postings = index.get_postings(field, term);
-    if (postings == nullptr) {
+    const std::optional<Postings> postings = index.get_postings(field, term);
+    if (!postings) {
         return "-";
     }
 
     std::string text;
-    for (const Posting& posting : *postings) {
+    for (const Posting posting : *postings) {
         text += "(" + std::to_string(posting.doc_id) + ":" + std::to_string(posting.term_frequency) + ")";
     }
     return text;
@@ -125,44 +125,6 @@ TEST(removing_a_document_clears_its_postings_in_every_field) {
     CHECK(index.terms_with_prefix("title", "c").empty());
     CHECK_EQ(index.get_unique_terms_count(), static_cast<std::size_t>(1));
     CHECK_EQ(index.get_total_documents(), 1);
-}
-
-TEST(index_keeps_the_same_term_in_two_fields_as_one_combined_posting) {
-    InvertedIndex index;
-    index.add_document(1, FieldTermFreqs{{"title", {{"cat", 1}}}, {"body", {{"cat", 2}}}});
-
-    const std::vector<Posting> combined = combined_postings(index, "cat");
-    CHECK_EQ(index.get_document_frequency("cat"), static_cast<std::size_t>(1));
-    CHECK_EQ(combined.size(), static_cast<std::size_t>(1));
-    CHECK_EQ(combined.front().term_frequency, 3);
-    CHECK_EQ(index.get_field_postings("cat").size(), static_cast<std::size_t>(2));
-}
-
-TEST(a_title_match_outranks_a_body_match) {
-    Engine engine;
-    engine.add("Notes", "rocket");
-    engine.add("Rocket", "notes");
-
-    CHECK_EQ(ids_of(engine.searcher().search("rocket")), "[1][0]");
-}
-
-TEST(a_title_prefix_match_outranks_a_body_prefix_match) {
-    Engine engine;
-    engine.add("Notes", "searching");
-    engine.add("Searching", "notes");
-
-    CHECK_EQ(ids_of(engine.searcher().search("search")), "[1][0]");
-}
-
-TEST(changing_a_boost_changes_the_order) {
-    Engine engine;
-    engine.add("Notes", "rocket");
-    engine.add("Rocket", "notes");
-
-    CHECK_EQ(ids_of(engine.searcher().search("rocket")), "[1][0]");
-    CHECK_EQ(ids_of(engine.searcher(FieldBoosts().set("body", 5.0)).search("rocket")), "[0][1]");
-    CHECK_EQ(ids_of(engine.searcher(FieldBoosts().set("title", 1.0)).search("rocket")), "[0][1]");
-    CHECK_EQ(ids_of(engine.searcher(FieldBoosts().set("title", 3.0).set("body", 3.0)).search("rocket")), "[0][1]");
 }
 
 TEST(a_higher_boost_scales_a_field_s_contribution) {

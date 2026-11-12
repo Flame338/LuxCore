@@ -123,11 +123,13 @@ TEST(a_long_posting_list_wastes_at_most_a_quarter_of_its_capacity) {
     }
 
     CHECK_EQ(df(index, "common"), static_cast<std::size_t>(documents));
+    // A doc id takes four bytes and a frequency below 256 takes one.
+    const std::size_t packed = static_cast<std::size_t>(documents) * 5;
     const std::size_t bytes = index.memory_usage().posting_bytes;
-    CHECK(bytes >= static_cast<std::size_t>(documents) * sizeof(Posting));
-    CHECK(bytes <= static_cast<std::size_t>(documents) * sizeof(Posting) * 5 / 4 + 2 * sizeof(Posting));
+    CHECK(bytes >= packed);
+    CHECK(bytes <= packed * 5 / 4 + 64);
 
-    const PostingList* list = index.get_posting_list("body", "common");
+    const std::optional<PostingList> list = index.get_posting_list("body", "common");
     for (int id = 0; id < documents; id++) {
         CHECK_EQ(list->postings[static_cast<std::size_t>(id)].doc_id, id);
     }
@@ -139,9 +141,9 @@ TEST(posting_lists_stay_sorted_when_documents_arrive_out_of_order) {
         index.add_document(id, FieldTermFreqs{{"body", {{"t", id}}}});
     }
 
-    const PostingList* list = index.get_posting_list("body", "t");
+    const std::optional<PostingList> list = index.get_posting_list("body", "t");
     std::string ids;
-    for (const Posting& posting : list->postings) {
+    for (const Posting posting : list->postings) {
         ids += std::to_string(posting.doc_id) + ":" + std::to_string(posting.term_frequency) + ",";
     }
     CHECK_EQ(ids, std::string("3:3,7:7,15:15,23:23,40:40,61:61,99:99,"));

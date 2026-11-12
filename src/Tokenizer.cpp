@@ -52,21 +52,22 @@ CharClass classify(char32_t code_point) {
     return range ? range->kind : CharClass::word;
 }
 
-bool is_inner_apostrophe(const std::string& text, utf8::Decoded current, std::size_t next,
+bool is_inner_apostrophe(std::string_view text, utf8::Decoded current, std::size_t next,
                          bool inside_word) {
     const bool is_apostrophe = current.code_point == U'\'' || current.code_point == curly_apostrophe;
     return is_apostrophe && inside_word && next < text.size() &&
            classify(utf8::decode(text, next).code_point) == CharClass::word;
 }
 
-void emit(std::vector<Token>& tokens, const std::string& text, std::size_t start, std::size_t end) {
-    tokens.push_back({text.substr(start, end - start), tokens.size(), start, end});
+void emit(std::vector<Token>& tokens, std::string_view text, std::size_t start, std::size_t end) {
+    tokens.push_back({std::string(text.substr(start, end - start)), tokens.size(), start, end});
 }
 
 }
 
-std::vector<Token> StandardTokenizer::tokenize_tokens(const std::string& text) const {
+std::vector<Token> StandardTokenizer::tokenize_tokens(std::string_view text) const {
     std::vector<Token> tokens;
+    tokens.reserve(text.size() / 6 + 4);
     std::size_t word_start = 0;
     std::size_t word_end = 0;
 

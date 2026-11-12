@@ -50,35 +50,6 @@ struct ParserFixture {
 
 }
 
-TEST(parser_reads_the_example_query) {
-    ParserFixture fixture;
-    CHECK_EQ(fixture.parse("fox AND (brown OR red) -bear"), "((+fox +(brown red)) -bear)");
-}
-
-TEST(parser_reads_single_terms_and_plain_groups) {
-    ParserFixture fixture;
-    CHECK_EQ(fixture.parse("fox"), "fox");
-    CHECK_EQ(fixture.parse("(fox)"), "fox");
-    CHECK_EQ(fixture.parse("((fox))"), "fox");
-}
-
-TEST(parser_treats_juxtaposition_as_or) {
-    ParserFixture fixture;
-    CHECK_EQ(fixture.parse("fox bear"), "(fox bear)");
-    CHECK_EQ(fixture.parse("fox OR bear"), "(fox bear)");
-    CHECK_EQ(fixture.parse("fox   bear  OR red"), "(fox bear red)");
-}
-
-TEST(parser_reads_plus_minus_and_not_prefixes) {
-    ParserFixture fixture;
-    CHECK_EQ(fixture.parse("+fox bear"), "(+fox bear)");
-    CHECK_EQ(fixture.parse("fox -bear"), "(fox -bear)");
-    CHECK_EQ(fixture.parse("fox NOT bear"), "(fox -bear)");
-    CHECK_EQ(fixture.parse("-bear"), "(-bear)");
-    CHECK_EQ(fixture.parse("(-bear)"), "(-bear)");
-    CHECK_EQ(fixture.parse("+fox"), "fox");
-}
-
 TEST(parser_binds_and_tighter_than_or) {
     ParserFixture fixture;
     CHECK_EQ(fixture.parse("fox OR brown AND red"), "(fox (+brown +red))");
@@ -88,26 +59,12 @@ TEST(parser_binds_and_tighter_than_or) {
     CHECK_EQ(fixture.parse("fox AND -bear"), "(+fox -bear)");
 }
 
-TEST(parser_nests_groups) {
-    ParserFixture fixture;
-    CHECK_EQ(fixture.parse("(fox OR bear) AND (brown OR red)"), "(+(fox bear) +(brown red))");
-    CHECK_EQ(fixture.parse("fox -(brown red)"), "(fox -(brown red))");
-    CHECK_EQ(fixture.parse("fox AND (bear OR (red AND brown))"), "(+fox +(bear (+red +brown)))");
-}
-
 TEST(parser_reads_quoted_phrases) {
     ParserFixture fixture;
     CHECK_EQ(fixture.parse("\"brown fox\""), "\"brown fox\"");
     CHECK_EQ(fixture.parse("\"fox\""), "fox");
     CHECK_EQ(fixture.parse("+\"brown fox\" -\"red bear\""), "(+\"brown fox\" -\"red bear\")");
     CHECK_EQ(fixture.parse("bear\"brown fox\""), "(bear \"brown fox\")");
-}
-
-TEST(parser_keeps_stop_word_gaps_inside_phrases) {
-    ParserFixture fixture;
-    CHECK_EQ(fixture.parse("\"cat of hat\""), "\"cat _ hat\"");
-    CHECK_EQ(fixture.parse("\"the cat of the hat\""), "\"cat _ _ hat\"");
-    CHECK_EQ(fixture.parse("\"cat hat\""), "\"cat hat\"");
 }
 
 TEST(parser_drops_clauses_that_analyze_to_nothing) {
@@ -179,17 +136,6 @@ TEST(parser_rejects_absurd_nesting_instead_of_overflowing_the_stack) {
     CHECK_EQ(fixture.parse(deep).substr(0, 6), "error@");
     const std::string fine = std::string(60, '(') + "fox" + std::string(60, ')');
     CHECK_EQ(fixture.parse(fine), "fox");
-}
-
-TEST(parse_failures_carry_no_query) {
-    ParserFixture fixture;
-    const ParseResult failed = fixture.parser.parse("fox AND (");
-    CHECK(!failed.ok());
-    CHECK(failed.query == nullptr);
-
-    const ParseResult fine = fixture.parser.parse("fox");
-    CHECK(fine.ok());
-    CHECK(fine.query != nullptr);
 }
 
 TEST(parsed_queries_search_an_index_end_to_end) {

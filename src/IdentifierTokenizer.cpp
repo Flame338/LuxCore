@@ -142,7 +142,7 @@ std::vector<Span> split_words(const std::string& token, const IdentifierOptions&
 
 IdentifierTokenizer::IdentifierTokenizer(IdentifierOptions options) : options(options) {}
 
-std::vector<Token> IdentifierTokenizer::tokenize_tokens(const std::string& text) const {
+std::vector<Token> IdentifierTokenizer::tokenize_tokens(std::string_view text) const {
     std::vector<Token> tokens;
     std::size_t position = 0;
     for (const Token& token : base.tokenize_tokens(text)) {

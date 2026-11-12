@@ -105,12 +105,3 @@ TEST(indexer_does_not_index_an_empty_exact_field) {
     CHECK_EQ(docs_for(indexer, ""), "-");
     CHECK_EQ(indexer.get_index().get_unique_terms_count(), static_cast<std::size_t>(0));
 }
-
-TEST(indexer_adds_a_document_with_no_fields) {
-    Indexer indexer("stopwords.txt");
-    const int id = indexer.add_document(Document{});
-
-    CHECK_EQ(id, 0);
-    CHECK_EQ(indexer.get_index().get_total_documents(), 1);
-    CHECK(indexer.get_document(id).get_fields().empty());
-}

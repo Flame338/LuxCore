@@ -2,10 +2,12 @@
 
 #include "LuxCore.h"
 
+#include <memory>
 #include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -23,6 +25,10 @@ struct lux_strings {
 
 struct lux_text {
     std::string value;
+};
+
+struct lux_prepared {
+    luxcore::Prepared value;
 };
 
 namespace {
@@ -122,6 +128,8 @@ const char* lux_status_message(lux_status status) {
             return "not a valid LuxCore index file";
         case LUX_INVALID_QUERY:
             return "invalid query";
+        case LUX_STATUS_FORCE_INT:
+            break;
     }
     return "unknown status";
 }
@@ -154,6 +162,38 @@ lux_status lux_index_add(lux_index* index, const char* key, std::size_t key_leng
         index->index.add(std::string(key, key_length), std::string(title, title_length), std::string(body, body_length));
         return LUX_OK;
     });
+}
+
+lux_status lux_index_prepare(const lux_index* index, const char* title, std::size_t title_length, const char* body,
+                             std::size_t body_length, unsigned flags, lux_prepared** out) {
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (index == nullptr || title == nullptr || body == nullptr || out == nullptr ||
+        (flags & ~LUX_PREPARE_STORE_BODY) != 0) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        const luxcore::PrepareOptions options{.store_body = (flags & LUX_PREPARE_STORE_BODY) != 0};
+        *out = new lux_prepared{index->index.prepare(std::string_view(title, title_length),
+                                                     std::string_view(body, body_length), options)};
+        return LUX_OK;
+    });
+}
+
+lux_status lux_index_commit(lux_index* index, const char* key, std::size_t key_length, lux_prepared* prepared) {
+    const std::unique_ptr<lux_prepared> owned(prepared);
+    if (index == nullptr || key == nullptr || prepared == nullptr) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        index->index.commit(std::string(key, key_length), std::move(owned->value));
+        return LUX_OK;
+    });
+}
+
+void lux_prepared_free(lux_prepared* prepared) {
+    delete prepared;
 }
 
 lux_status lux_index_remove(lux_index* index, const char* key, std::size_t key_length, int* removed) {
@@ -270,6 +310,50 @@ lux_status lux_index_snippet_query(const lux_index* index, const char* key, std:
                         });
 }
 
+namespace {
+
+template <typename Snippet>
+lux_status snippet_text_into(const lux_index* index, const char* text, std::size_t text_length, const char* query,
+                             std::size_t query_length, const lux_snippet_options* options, lux_text** out,
+                             std::size_t* error_offset, Snippet snippet) {
+    if (error_offset != nullptr) {
+        *error_offset = 0;
+    }
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (index == nullptr || text == nullptr || query == nullptr || out == nullptr) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        *out = new lux_text{snippet(index->index, std::string_view(text, text_length), std::string(query, query_length),
+                                    snippet_options(options))};
+        return LUX_OK;
+    }, error_offset);
+}
+
+}
+
+lux_status lux_index_snippet_text(const lux_index* index, const char* text, std::size_t text_length, const char* query,
+                                  std::size_t query_length, const lux_snippet_options* options, lux_text** out) {
+    return snippet_text_into(index, text, text_length, query, query_length, options, out, nullptr,
+                             [](const luxcore::Index& target, std::string_view body, const std::string& query_text,
+                                const luxcore::SnippetOptions& settings) {
+                                 return target.snippet_text(body, query_text, settings);
+                             });
+}
+
+lux_status lux_index_snippet_text_query(const lux_index* index, const char* text, std::size_t text_length,
+                                        const char* query, std::size_t query_length,
+                                        const lux_snippet_options* options, lux_text** out,
+                                        std::size_t* error_offset) {
+    return snippet_text_into(index, text, text_length, query, query_length, options, out, error_offset,
+                             [](const luxcore::Index& target, std::string_view body, const std::string& query_text,
+                                const luxcore::SnippetOptions& settings) {
+                                 return target.snippet_text_query(body, query_text, settings);
+                             });
+}
+
 lux_status lux_index_suggest(const lux_index* index, const char* query, std::size_t query_length, std::size_t limit,
                              lux_strings** out) {
     if (out != nullptr) {
@@ -280,6 +364,19 @@ lux_status lux_index_suggest(const lux_index* index, const char* query, std::siz
     }
     return guarded([&] {
         *out = new lux_strings{index->index.suggest(std::string(query, query_length), limit)};
+        return LUX_OK;
+    });
+}
+
+lux_status lux_index_debug_stats(const lux_index* index, lux_text** out) {
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (index == nullptr || out == nullptr) {
+        return LUX_INVALID_ARGUMENT;
+    }
+    return guarded([&] {
+        *out = new lux_text{index->index.debug_stats()};
         return LUX_OK;
     });
 }

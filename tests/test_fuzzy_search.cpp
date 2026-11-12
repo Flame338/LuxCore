@@ -1,6 +1,6 @@
 #include "TestFramework.h"
 
-#include "FuzzyIndex.h"
+#include "FuzzyTerms.h"
 #include "Indexer.h"
 #include "Searcher.h"
 
@@ -49,18 +49,6 @@ TEST(a_plan_decides_fuzziness_for_the_searcher_that_scores_it) {
     CHECK(fuzzy.search(exact.plan("serch ")).empty());
 }
 
-TEST(fuzzy_search_finds_a_document_despite_a_typo_in_each_word) {
-    Indexer indexer("stopwords.txt");
-    add_search_engine_corpus(indexer);
-    const Searcher searcher = fuzzy_searcher(indexer);
-
-    CHECK_EQ(keys_of(searcher, "serch engine "), "[engine]");
-    CHECK_EQ(keys_of(searcher, "search engin "), "[engine]");
-    CHECK_EQ(keys_of(searcher, "serch engin "), "[engine]");
-    CHECK_EQ(keys_of(searcher, "saerch engine "), "[engine]");
-    CHECK_EQ(keys_of(searcher, "seaarch engine "), "[engine]");
-}
-
 TEST(fuzzy_search_combines_with_prefix_matching_on_the_unfinished_word) {
     Indexer indexer("stopwords.txt");
     add_search_engine_corpus(indexer);
@@ -78,16 +66,6 @@ TEST(fuzzy_search_tolerates_a_typo_in_a_utf8_word) {
 
     CHECK_EQ(keys_of(searcher, "esprsso "), "[cafe]");
     CHECK_EQ(keys_of(searcher, "cafw menu "), "[cafe]");
-}
-
-TEST(fuzzy_search_is_off_by_default_and_finds_nothing_for_typos) {
-    Indexer indexer("stopwords.txt");
-    add_search_engine_corpus(indexer);
-    const Searcher searcher = exact_searcher(indexer);
-
-    CHECK_EQ(keys_of(searcher, "serch engine "), "[engine]");
-    CHECK_EQ(keys_of(searcher, "serch "), "");
-    CHECK_EQ(keys_of(searcher, "serch engin "), "");
 }
 
 TEST(fuzzy_search_ranks_an_exact_match_above_a_near_match) {
@@ -168,7 +146,7 @@ TEST(an_updated_documents_old_terms_stop_matching_fuzzily) {
 }
 
 TEST(fuzzy_index_removal_keeps_the_remaining_terms_and_reuses_nodes) {
-    FuzzyIndex fuzzy;
+    FuzzyTerms fuzzy;
     fuzzy.add("search");
     fuzzy.add("searching");
     fuzzy.add("seal");

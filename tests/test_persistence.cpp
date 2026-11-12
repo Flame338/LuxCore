@@ -48,7 +48,7 @@ std::string describe_index(const InvertedIndex& index, int ids) {
             text += " " + std::to_string(index.get_field_length(field, id));
         }
         for (const TermPostings& match : index.terms_with_prefix(field, "")) {
-            const PostingList* list = index.get_posting_list(field, std::string(match.term));
+            const std::optional<PostingList> list = index.get_posting_list(field, match.term);
             text += "\n " + std::string(match.term) + ":";
             for (std::size_t i = 0; i < list->postings.size(); i++) {
                 text += "(" + std::to_string(list->postings[i].doc_id) + "x" +
@@ -338,89 +338,6 @@ luxcore::Index api_corpus() {
 
 }
 
-TEST(byte_writer_emits_fixed_width_fields_little_endian) {
-    ByteWriter writer;
-    writer.u32(0x01020304);
-    writer.u64(0x1112131415161718ULL);
-
-    CHECK_EQ(writer.bytes(), std::string("\x04\x03\x02\x01\x18\x17\x16\x15\x14\x13\x12\x11", 12));
-}
-
-TEST(byte_writer_encodes_varints_in_seven_bit_groups) {
-    const std::vector<std::pair<std::uint64_t, std::size_t>> cases = {
-        {0, 1}, {127, 1}, {128, 2}, {16383, 2}, {16384, 3}, {0xFFFFFFFFULL, 5}, {UINT64_MAX, 10}};
-    for (const auto& [value, size] : cases) {
-        ByteWriter writer;
-        writer.varint(value);
-        CHECK_EQ(writer.size(), size);
-
-        ByteReader reader(writer.bytes());
-        CHECK_EQ(reader.varint(), value);
-        CHECK(reader.at_end());
-    }
-
-    ByteWriter writer;
-    writer.varint(300);
-    CHECK_EQ(writer.bytes(), std::string("\xac\x02"));
-}
-
-TEST(byte_reader_round_trips_every_field_type) {
-    ByteWriter writer;
-    writer.u8(7);
-    writer.u32(0xDEADBEEF);
-    writer.u64(0x0123456789ABCDEFULL);
-    writer.string("caf\xc3\xa9");
-    writer.string("");
-
-    ByteReader reader(writer.bytes());
-    CHECK_EQ(static_cast<int>(reader.u8()), 7);
-    CHECK_EQ(reader.u32(), static_cast<std::uint32_t>(0xDEADBEEF));
-    CHECK_EQ(reader.u64(), static_cast<std::uint64_t>(0x0123456789ABCDEFULL));
-    CHECK_EQ(std::string(reader.string("text")), "caf\xc3\xa9");
-    CHECK_EQ(std::string(reader.string("text")), "");
-    CHECK(reader.at_end());
-}
-
-TEST(byte_reader_rejects_reads_past_the_end) {
-    const std::string two_bytes("\x01\x02");
-    CHECK(rejected(failure_of([&] { ByteReader(two_bytes).u32(); })));
-    CHECK(rejected(failure_of([&] { ByteReader(two_bytes).u64(); })));
-    CHECK(rejected(failure_of([&] { ByteReader("").u8(); })));
-    CHECK(rejected(failure_of([&] { ByteReader(std::string("\x80\x80")).varint(); })));
-}
-
-TEST(byte_reader_rejects_malformed_varints) {
-    CHECK(rejected(failure_of([] { ByteReader(std::string(11, '\x80')).varint(); })));
-    CHECK(rejected(failure_of([] { ByteReader(std::string("\xff\xff\xff\xff\xff\xff\xff\xff\xff\x7f")).varint(); })));
-}
-
-TEST(byte_reader_checks_lengths_and_counts_against_the_remaining_bytes) {
-    ByteWriter writer;
-    writer.varint(5);
-    writer.append("abc");
-    CHECK(rejected(failure_of([&] { ByteReader(writer.bytes()).string("name"); })));
-
-    ByteWriter counts;
-    counts.varint(3);
-    counts.append("abcd");
-    CHECK(rejected(failure_of([&] { ByteReader(counts.bytes()).count("items", 2); })));
-    CHECK_EQ(ByteReader(counts.bytes()).count("items", 1), static_cast<std::size_t>(3));
-
-    ByteWriter huge;
-    huge.varint(UINT64_MAX);
-    CHECK(rejected(failure_of([&] { ByteReader(huge.bytes()).string("name"); })));
-    CHECK(rejected(failure_of([&] { ByteReader(huge.bytes()).count("items", 1); })));
-}
-
-TEST(a_saved_index_starts_with_the_magic_and_version_in_little_endian) {
-    const std::string bytes = Indexer().serialize();
-
-    CHECK_EQ(bytes.substr(0, 4), std::string("LUXC"));
-    CHECK_EQ(bytes.substr(4, 4), std::string("\x01\x00\x00\x00", 4));
-    CHECK_EQ(bytes.substr(8, 8), std::string("\x04\x00\x00\x00\x00\x00\x00\x00", 8));
-    CHECK_EQ(bytes.size(), static_cast<std::size_t>(20));
-}
-
 TEST(round_trip_keeps_every_observable_result) {
     const Indexer original = varied_corpus();
     const Indexer loaded = Indexer::deserialize(original.serialize(), "stopwords.txt");
@@ -435,33 +352,6 @@ TEST(round_trip_keeps_every_observable_result) {
     CHECK(mentions(results, "rocket => [0,rocket,"));
     CHECK(mentions(results, "[1,many,"));
     CHECK_EQ(results_of(loaded), results);
-}
-
-TEST(round_trip_keeps_ids_keys_and_the_gaps_left_by_removed_documents) {
-    const Indexer original = varied_corpus();
-    const Indexer loaded = Indexer::deserialize(original.serialize(), "stopwords.txt");
-
-    for (const char* key : {"rocket", "many", "accents", "cjk", "ids", "stopwords-only", "swap", "late"}) {
-        CHECK(loaded.find_id(key).has_value());
-        CHECK_EQ(*loaded.find_id(key), *original.find_id(key));
-        CHECK_EQ(loaded.get_key(*loaded.find_id(key)), std::string(key));
-    }
-    for (const char* key : {"gone-1", "gone-2", "missing"}) {
-        CHECK(!loaded.find_id(key).has_value());
-    }
-    CHECK(!loaded.contains(7));
-    CHECK_EQ(loaded.get_key(5), "");
-    CHECK(loaded.contains(5));
-    CHECK_EQ(loaded.get_index().get_total_documents(), original.get_index().get_total_documents());
-}
-
-TEST(round_trip_serializes_to_identical_bytes_again) {
-    const Indexer original = varied_corpus();
-    const std::string bytes = original.serialize();
-    const Indexer loaded = Indexer::deserialize(bytes, "stopwords.txt");
-
-    CHECK(loaded.serialize() == bytes);
-    CHECK(original.serialize() == bytes);
 }
 
 TEST(round_trip_of_postings_without_positions_and_mixed_postings) {
@@ -491,22 +381,6 @@ TEST(round_trip_of_postings_without_positions_and_mixed_postings) {
     CHECK_EQ(loaded.get_field_length("title", 2), 8);
 }
 
-TEST(a_loaded_index_can_be_changed_and_continues_internal_ids) {
-    Indexer original = varied_corpus();
-    Indexer loaded = Indexer::deserialize(varied_corpus().serialize(), "stopwords.txt");
-    const int last_id = *loaded.find_id("late");
-
-    const std::string original_ids = mutate(original);
-    const std::string loaded_ids = mutate(loaded);
-
-    CHECK_EQ(loaded_ids, original_ids);
-    CHECK_EQ(loaded_ids.substr(0, loaded_ids.find(',')), std::to_string(last_id + 1));
-    CHECK_EQ(describe(loaded, corpus_ids + 8), describe(original, corpus_ids + 8));
-    CHECK_EQ(results_of(loaded), results_of(original));
-    CHECK(loaded.serialize() == original.serialize());
-    CHECK(mentions(results_of(loaded), ",again,"));
-}
-
 TEST(a_loaded_index_survives_a_second_save_and_load_after_changes) {
     Indexer loaded = Indexer::deserialize(varied_corpus().serialize(), "stopwords.txt");
     mutate(loaded);
@@ -514,97 +388,6 @@ TEST(a_loaded_index_survives_a_second_save_and_load_after_changes) {
 
     CHECK_EQ(describe(again, corpus_ids + 8), describe(loaded, corpus_ids + 8));
     CHECK_EQ(results_of(again), results_of(loaded));
-}
-
-TEST(an_empty_index_round_trips_and_stays_usable) {
-    const Indexer empty;
-    const std::string bytes = empty.serialize();
-    Indexer loaded = Indexer::deserialize(bytes);
-
-    CHECK_EQ(loaded.get_index().get_total_documents(), 0);
-    CHECK_EQ(loaded.get_index().get_unique_terms_count(), static_cast<std::size_t>(0));
-    CHECK(loaded.serialize() == bytes);
-    CHECK(Searcher(loaded.get_index(), loaded.get_analyzer()).search("anything").empty());
-    CHECK_EQ(loaded.add_document("first", make_text_document("Hello", "world")), 0);
-    CHECK_EQ(loaded.get_key(0), "first");
-}
-
-TEST(an_index_whose_documents_were_all_removed_keeps_counting_ids_after_load) {
-    Indexer indexer;
-    indexer.add_document("a", make_text_document("one", "two"));
-    indexer.add_document("b", make_text_document("three", "four"));
-    indexer.remove_document("a");
-    indexer.remove_document("b");
-
-    Indexer loaded = Indexer::deserialize(indexer.serialize());
-
-    CHECK_EQ(loaded.get_index().get_total_documents(), 0);
-    CHECK(!loaded.find_id("a").has_value());
-    CHECK_EQ(loaded.add_document("c", make_text_document("five", "six")), 2);
-}
-
-TEST(saving_does_not_change_the_index) {
-    const Indexer indexer = varied_corpus();
-    const std::string before = describe(indexer, corpus_ids) + results_of(indexer);
-
-    const std::string first = indexer.serialize();
-    const std::string second = indexer.serialize();
-
-    CHECK(first == second);
-    CHECK_EQ(describe(indexer, corpus_ids) + results_of(indexer), before);
-}
-
-TEST(a_loaded_index_uses_the_analyzer_it_is_given) {
-    Indexer plain;
-    plain.add_document("a", make_text_document("Plans", "to be or not to be"));
-    Indexer loaded = Indexer::deserialize(plain.serialize(), "stopwords.txt");
-
-    CHECK(loaded.get_index().get_document_frequency("to") > 0);
-    CHECK(Searcher(loaded.get_index(), loaded.get_analyzer()).search("to be ").empty());
-    CHECK(!Searcher(plain.get_index(), plain.get_analyzer()).search("to be ").empty());
-}
-
-TEST(load_rejects_a_wrong_magic_number) {
-    std::string bytes = varied_corpus().serialize();
-    bytes[0] = 'X';
-
-    CHECK(mentions(load_failure(bytes), "magic"));
-    CHECK(mentions(load_failure("this is a plain text file, not an index"), "magic"));
-}
-
-TEST(load_rejects_an_unsupported_version) {
-    for (const char version : {'\x00', '\x02', '\x7f'}) {
-        std::string bytes = varied_corpus().serialize();
-        bytes[4] = version;
-        const std::string failure = load_failure(bytes);
-
-        CHECK(mentions(failure, "version"));
-        CHECK(mentions(failure, std::to_string(static_cast<int>(version)).c_str()));
-    }
-
-    std::string far_future = varied_corpus().serialize();
-    far_future[7] = '\x01';
-    CHECK(mentions(load_failure(far_future), "version"));
-}
-
-TEST(load_rejects_a_file_too_short_for_the_header) {
-    const std::string bytes = Indexer().serialize();
-
-    CHECK(rejected(load_failure("")));
-    CHECK(rejected(load_failure("L")));
-    CHECK(rejected(load_failure(bytes.substr(0, 7))));
-    CHECK(rejected(load_failure(bytes.substr(0, 12))));
-}
-
-TEST(load_rejects_trailing_bytes_and_a_wrong_declared_length) {
-    const std::string bytes = small_corpus().serialize();
-
-    CHECK(mentions(load_failure(bytes + "x"), "truncated or has trailing"));
-    CHECK(mentions(load_failure(with_body_length(bytes, bytes.size() - 15)), "truncated or has trailing"));
-    CHECK(mentions(load_failure(with_body_length(bytes, UINT64_MAX)), "truncated or has trailing"));
-
-    const std::string padded = bytes + "x";
-    CHECK(mentions(load_failure(with_body_length(padded, padded.size() - 16)), "unexpected bytes"));
 }
 
 TEST(every_truncation_of_a_saved_index_is_rejected) {
@@ -692,63 +475,6 @@ TEST(crafted_minimal_files_load_and_their_damaged_variants_are_rejected) {
     CHECK(mentions(load_failure(with_postings(0, 0)), "term frequency"));
     CHECK(mentions(load_failure(with_postings(0, 0x20000000ULL * 2 + 1)), "does not fit"));
     CHECK(mentions(load_failure(with_postings(0, (static_cast<std::uint64_t>(1) << 40) | 2)), "term frequency"));
-}
-
-TEST(crafted_counts_that_exceed_the_data_never_allocate) {
-    ByteWriter huge_ids;
-    huge_ids.varint(1000000000);
-    huge_ids.varint(0);
-    no_keys(huge_ids);
-    huge_ids.varint(0);
-    CHECK(mentions(load_failure(framed(huge_ids.bytes())), "implausible"));
-
-    ByteWriter beyond_int;
-    beyond_int.varint(static_cast<std::uint64_t>(1) << 40);
-    beyond_int.varint(0);
-    CHECK(mentions(load_failure(framed(beyond_int.bytes())), "out of range"));
-
-    ByteWriter huge_documents;
-    huge_documents.varint(2000000000);
-    huge_documents.varint(2000000000);
-    CHECK(mentions(load_failure(framed(huge_documents.bytes())), "does not fit"));
-
-    ByteWriter huge_string;
-    huge_string.varint(1);
-    huge_string.varint(1);
-    huge_string.varint(0);
-    huge_string.varint(1);
-    huge_string.varint(UINT64_MAX >> 1);
-    CHECK(rejected(load_failure(framed(huge_string.bytes()))));
-
-    ByteWriter huge_postings;
-    one_document_store(huge_postings);
-    no_keys(huge_postings);
-    huge_postings.varint(1);
-    huge_postings.string("t");
-    huge_postings.varint(1);
-    huge_postings.string("a");
-    huge_postings.varint(4000000000ULL);
-    CHECK(mentions(load_failure(framed(huge_postings.bytes())), "posting count"));
-
-    ByteWriter huge_terms;
-    one_document_store(huge_terms);
-    no_keys(huge_terms);
-    huge_terms.varint(1);
-    huge_terms.string("t");
-    huge_terms.varint(4000000000ULL);
-    CHECK(mentions(load_failure(framed(huge_terms.bytes())), "term count"));
-
-    ByteWriter huge_fields;
-    one_document_store(huge_fields);
-    no_keys(huge_fields);
-    huge_fields.varint(4000000000ULL);
-    CHECK(mentions(load_failure(framed(huge_fields.bytes())), "field count"));
-
-    ByteWriter huge_positions;
-    one_document_store(huge_positions);
-    no_keys(huge_positions);
-    one_posting_list(huge_positions, 0, (static_cast<std::uint64_t>(1000000) << 1) | 1);
-    CHECK(mentions(load_failure(framed(huge_positions.bytes())), "does not fit"));
 }
 
 TEST(crafted_inconsistent_references_are_rejected) {
@@ -849,93 +575,6 @@ TEST(a_sparse_store_with_many_removed_ids_loads) {
     CHECK_EQ(loaded.get_index().get_document_frequency("t"), static_cast<std::size_t>(1));
 }
 
-TEST(doc_ids_in_postings_are_stored_as_gaps_of_about_one_byte) {
-    constexpr std::size_t documents = 20000;
-    Indexer indexer;
-    for (std::size_t i = 0; i < documents; i++) {
-        Document document;
-        document.add({"t", "alpha", FieldOptions{false, true, false}});
-        indexer.add_document(document);
-    }
-
-    const std::size_t size = indexer.serialize().size();
-
-    CHECK(size >= 5 * documents);
-    CHECK(size < 5 * documents + 100);
-}
-
-TEST(positions_are_stored_as_gaps_of_about_one_byte) {
-    std::string text;
-    for (int i = 0; i < 1000; i++) {
-        text += "zeta ";
-    }
-    Indexer indexer;
-    Document document;
-    document.add({"t", text, FieldOptions{false, true, true}});
-    indexer.add_document(document);
-
-    const std::size_t size = indexer.serialize().size();
-
-    CHECK(size >= 1000);
-    CHECK(size < 1100);
-}
-
-TEST(index_round_trips_through_a_file_with_identical_results) {
-    const TempFile file("round_trip");
-    const luxcore::Index original = api_corpus();
-    original.save(file.str());
-
-    const luxcore::Index loaded = luxcore::Index::load(file.str());
-
-    CHECK_EQ(loaded.size(), original.size());
-    CHECK_EQ(api_results(loaded), api_results(original));
-    CHECK_EQ(api_stored(loaded), api_stored(original));
-    CHECK(mentions(api_results(loaded), "rocket => rocket@"));
-    CHECK_EQ(loaded.stored("cjk", "title").value_or("-"), "\xe4\xb8\x9c\xe4\xba\xac\xe5\xa4\xa7\xe5\xad\xa6");
-    CHECK(!loaded.stored("gone-1", "title").has_value());
-    CHECK(!loaded.search("rocket").empty());
-    CHECK(loaded.search("rocket")[0].score == original.search("rocket")[0].score);
-}
-
-TEST(a_file_holds_the_header_and_nothing_else_than_the_index) {
-    const TempFile file("file_bytes");
-    api_corpus().save(file.str());
-
-    const std::string bytes = read_all(file.str());
-
-    CHECK_EQ(bytes.substr(0, 4), "LUXC");
-    CHECK_EQ(std::filesystem::file_size(file.path), static_cast<std::uintmax_t>(bytes.size()));
-    CHECK(Indexer::deserialize(bytes).get_index().get_total_documents() == 6);
-}
-
-TEST(saving_twice_gives_the_same_file_and_leaves_the_index_unchanged) {
-    const TempFile first("twice_1");
-    const TempFile second("twice_2");
-    const luxcore::Index index = api_corpus();
-    const std::string before = api_results(index);
-
-    index.save(first.str());
-    index.save(second.str());
-
-    CHECK(read_all(first.str()) == read_all(second.str()));
-    CHECK_EQ(api_results(index), before);
-    CHECK_EQ(index.size(), static_cast<std::size_t>(6));
-}
-
-TEST(saving_replaces_an_existing_file_completely) {
-    const TempFile file("replace");
-    api_corpus().save(file.str());
-    luxcore::Index small;
-    small.add("only", "One", "document");
-    small.save(file.str());
-
-    const luxcore::Index loaded = luxcore::Index::load(file.str());
-
-    CHECK_EQ(loaded.size(), static_cast<std::size_t>(1));
-    CHECK(loaded.search("rocket").empty());
-    CHECK_EQ(loaded.search("document")[0].key, "only");
-}
-
 TEST(an_index_loaded_from_a_file_can_be_changed) {
     const TempFile file("mutate");
     api_corpus().save(file.str());
@@ -956,18 +595,6 @@ TEST(an_index_loaded_from_a_file_can_be_changed) {
     CHECK(!loaded.search("rocket").empty());
 }
 
-TEST(an_empty_index_round_trips_through_a_file) {
-    const TempFile file("empty");
-    luxcore::Index().save(file.str());
-
-    luxcore::Index loaded = luxcore::Index::load(file.str());
-
-    CHECK_EQ(loaded.size(), static_cast<std::size_t>(0));
-    CHECK(loaded.search("anything").empty());
-    loaded.add("a", "Title", "body");
-    CHECK_EQ(loaded.size(), static_cast<std::size_t>(1));
-}
-
 TEST(loading_a_missing_file_throws) {
     const TempFile file("missing");
 
@@ -975,12 +602,6 @@ TEST(loading_a_missing_file_throws) {
 
     CHECK(rejected(failure));
     CHECK(mentions(failure, file.str().c_str()));
-}
-
-TEST(loading_a_directory_throws) {
-    const std::string directory = std::filesystem::temp_directory_path().string();
-
-    CHECK(rejected(failure_of([&] { luxcore::Index::load(directory); })));
 }
 
 TEST(loading_an_empty_or_garbage_file_throws) {

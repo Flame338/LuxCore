@@ -214,7 +214,7 @@ std::string render(std::string_view text, const std::vector<Span>& spans, std::s
     return out;
 }
 
-std::string highlight(const HighlightOptions& options, const std::string& text, const MatchPlan& plan) {
+std::string highlight(const HighlightOptions& options, std::string_view text, const MatchPlan& plan) {
     std::vector<Match> matches = find_matches(plan.analyzer().analyze_tokens(text), plan);
     assign_code_points(text, matches);
 
@@ -230,7 +230,7 @@ std::string highlight(const HighlightOptions& options, const std::string& text, 
 
 Highlighter::Highlighter(HighlightOptions options) : options(std::move(options)) {}
 
-std::string Highlighter::snippet(const std::string& stored_text, const MatchPlan& plan) const {
+std::string Highlighter::snippet(std::string_view stored_text, const MatchPlan& plan) const {
     return highlight(options, stored_text, plan);
 }
 

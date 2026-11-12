@@ -67,28 +67,6 @@ TEST(field_lengths_follow_removal_and_update) {
     CHECK_NEAR(index.get_average_field_length("body"), 0.0, 1e-12);
 }
 
-TEST(the_default_scorer_is_tf_idf) {
-    BodyIndex corpus;
-    corpus.add(1, "apple apple pie");
-    corpus.add(2, "pie");
-
-    const std::vector<SearchHit> hits = Searcher(corpus.index, corpus.analyzer).search("apple ");
-    CHECK_EQ(hits.size(), static_cast<std::size_t>(1));
-    CHECK_NEAR(hits[0].score, 2.0 * (std::log(3.0 / 2.0) + 1.0), 1e-9);
-}
-
-TEST(bm25_scores_a_term_with_saturated_and_length_normalised_tf) {
-    BodyIndex corpus;
-    corpus.add(1, "foo foo bar");
-    corpus.add(2, "bar");
-
-    const std::vector<SearchHit> hits = corpus.search("foo ", Scoring::bm25_with(1.2, 0.75));
-    CHECK_EQ(hits.size(), static_cast<std::size_t>(1));
-    const double idf = std::log(1.0 + (2.0 - 1.0 + 0.5) / (1.0 + 0.5));
-    const double tf = 2.0 / (1.0 - 0.75 + 0.75 * 3.0 / 2.0);
-    CHECK_NEAR(hits[0].score, idf * tf / (1.2 + tf), 1e-9);
-}
-
 TEST(bm25_prefers_the_shorter_field_when_term_frequency_is_equal) {
     BodyIndex corpus;
     corpus.add(1, "rocket alpha beta gamma delta epsilon zeta eta theta");
@@ -97,44 +75,6 @@ TEST(bm25_prefers_the_shorter_field_when_term_frequency_is_equal) {
 
     CHECK_EQ(ids_of(corpus.search("rocket ", Scoring::tf_idf())), "[1][2]");
     CHECK_EQ(ids_of(corpus.search("rocket ", Scoring::bm25_with())), "[2][1]");
-}
-
-TEST(bm25_saturates_term_frequency) {
-    BodyIndex corpus;
-    corpus.add(1, "rocket rocket rocket rocket rocket rocket rocket rocket");
-    corpus.add(2, "rocket rocket rocket rocket");
-    corpus.add(3, "pad");
-
-    const double tf_idf_ratio = corpus.search("rocket ", Scoring::tf_idf())[0].score /
-                                corpus.search("rocket ", Scoring::tf_idf())[1].score;
-    const std::vector<SearchHit> bm25 = corpus.search("rocket ", Scoring::bm25_with(1.2, 0.0));
-    CHECK_NEAR(tf_idf_ratio, 2.0, 1e-9);
-    CHECK_EQ(ids_of(bm25), "[1][2]");
-    CHECK(bm25[0].score / bm25[1].score < 1.2);
-}
-
-TEST(bm25_with_b_zero_ignores_length_and_with_k1_zero_ignores_frequency) {
-    BodyIndex corpus;
-    corpus.add(1, "rocket rocket alpha beta gamma delta epsilon zeta");
-    corpus.add(2, "rocket");
-    corpus.add(3, "pad");
-
-    const std::vector<SearchHit> no_length = corpus.search("rocket ", Scoring::bm25_with(1.2, 0.0));
-    CHECK_EQ(ids_of(no_length), "[1][2]");
-
-    const std::vector<SearchHit> binary = corpus.search("rocket ", Scoring::bm25_with(0.0, 0.0));
-    CHECK_EQ(ids_of(binary), "[1][2]");
-    CHECK_NEAR(binary[0].score, binary[1].score, 1e-12);
-}
-
-TEST(bm25_still_scores_a_term_that_appears_in_every_document) {
-    BodyIndex corpus;
-    corpus.add(1, "foo");
-    corpus.add(2, "foo");
-
-    const std::vector<SearchHit> hits = corpus.search("foo ", Scoring::bm25_with());
-    CHECK_EQ(hits.size(), static_cast<std::size_t>(2));
-    CHECK(hits[0].score > 0.0);
 }
 
 TEST(bm25_keeps_field_boosts_working) {

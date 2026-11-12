@@ -21,7 +21,7 @@ AnalyzedQuery Analyzer::analyze_query(const std::string& text) const {
     return result;
 }
 
-std::vector<Token> Analyzer::analyze_tokens(const std::string& text) const {
+std::vector<Token> Analyzer::analyze_tokens(std::string_view text) const {
     std::vector<Token> tokens = tokenizer->tokenize_tokens(text);
     for (const auto& filter : filters) {
         filter->filter(tokens);

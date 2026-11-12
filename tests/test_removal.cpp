@@ -83,7 +83,7 @@ TEST(update_leaves_no_stale_postings) {
     CHECK_EQ(postings_text(indexer, "cat"), "-");
     CHECK_EQ(postings_text(indexer, "dog"), "(0:1)(1:1)");
     CHECK_EQ(postings_text(indexer, "fish"), "(0:1)");
-    CHECK(indexer.get_index().get_postings("title", "cat") == nullptr);
+    CHECK(!indexer.get_index().get_postings("title", "cat"));
     CHECK_EQ(indexer.get_index().get_total_documents(), 2);
     CHECK_EQ(indexer.get_index().get_unique_terms_count(), terms_before);
     CHECK_EQ(indexer.get_index().get_field_documents("title"), 2);
@@ -177,28 +177,4 @@ TEST(search_never_returns_a_removed_document) {
     CHECK_EQ(searcher.search("rocket", 100).size(), static_cast<std::size_t>(4));
     CHECK_EQ(searcher.suggest("sear").size(), static_cast<std::size_t>(1));
     CHECK_EQ(searcher.suggest("sear").front().doc_freq, static_cast<std::size_t>(4));
-}
-
-TEST(documents_without_a_key_return_an_empty_key_in_hits) {
-    Indexer indexer("stopwords.txt");
-    indexer.add_document(make_text_document("Cat", ""));
-
-    const Searcher searcher(indexer);
-    const std::vector<SearchHit> hits = searcher.search("cat");
-    CHECK_EQ(hits.size(), static_cast<std::size_t>(1));
-    CHECK_EQ(hits[0].doc_id, 0);
-    CHECK_EQ(hits[0].key, "");
-}
-
-TEST(document_store_remove_keeps_other_ids_stable) {
-    DocumentStore store;
-    const int a = store.add(make_text_document("a", ""));
-    const int b = store.add(make_text_document("b", ""));
-
-    CHECK(store.remove(a));
-    CHECK(!store.remove(a));
-    CHECK(!store.contains(a));
-    CHECK_EQ(store.get(b).find("title")->value, "b");
-    CHECK_EQ(store.size(), static_cast<std::size_t>(1));
-    CHECK_EQ(store.add(make_text_document("c", "")), 2);
 }

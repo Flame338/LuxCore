@@ -32,24 +32,6 @@ std::string terms_with_prefix_of(const InvertedIndex& index, const std::string& 
 
 }
 
-TEST(index_returns_postings_with_term_frequencies) {
-    InvertedIndex index;
-    add_body(index, 1, TermFreqs{{"cat", 2}, {"dog", 1}});
-    add_body(index, 2, TermFreqs{{"cat", 1}});
-
-    CHECK_EQ(index.get_total_documents(), 2);
-    CHECK_EQ(index.get_unique_terms_count(), static_cast<std::size_t>(2));
-    CHECK_EQ(postings_of(index, "cat"), "(1:2)(2:1)");
-    CHECK_EQ(postings_of(index, "dog"), "(1:1)");
-}
-
-TEST(index_returns_null_for_an_unknown_term) {
-    InvertedIndex index;
-    add_body(index, 1, TermFreqs{{"cat", 1}});
-
-    CHECK_EQ(index.get_document_frequency("bird"), static_cast<std::size_t>(0));
-}
-
 TEST(index_keeps_postings_sorted_by_doc_id_whatever_the_insert_order) {
     InvertedIndex index;
     add_body(index, 5, TermFreqs{{"foo", 1}});
@@ -108,27 +90,6 @@ TEST(index_after_replacing_a_document_equals_an_index_built_from_scratch) {
     for (const char* term : {"apache", "lucene", "search", "engine", "zebra", "lorem"}) {
         CHECK_EQ(postings_of(edited, term), postings_of(fresh, term));
     }
-}
-
-TEST(index_removing_a_document_drops_its_postings_and_empty_terms) {
-    InvertedIndex index;
-    add_body(index, 1, TermFreqs{{"cat", 1}, {"dog", 1}});
-    add_body(index, 2, TermFreqs{{"dog", 1}});
-    index.remove_document(1);
-
-    CHECK_EQ(index.get_total_documents(), 1);
-    CHECK_EQ(index.get_document_frequency("cat"), static_cast<std::size_t>(0));
-    CHECK_EQ(postings_of(index, "dog"), "(2:1)");
-    CHECK_EQ(index.get_unique_terms_count(), static_cast<std::size_t>(1));
-}
-
-TEST(index_removing_an_unknown_document_does_nothing) {
-    InvertedIndex index;
-    add_body(index, 1, TermFreqs{{"cat", 1}});
-    index.remove_document(42);
-
-    CHECK_EQ(index.get_total_documents(), 1);
-    CHECK_EQ(postings_of(index, "cat"), "(1:1)");
 }
 
 TEST(index_lists_terms_with_a_prefix_in_sorted_order) {

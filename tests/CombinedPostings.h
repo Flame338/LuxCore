@@ -9,7 +9,7 @@
 inline std::vector<Posting> combined_postings(const InvertedIndex& index, const std::string& term) {
     std::map<int, int> by_document;
     for (const FieldPostings& entry : index.get_field_postings(term)) {
-        for (const Posting& posting : *entry.postings) {
+        for (const Posting posting : entry.postings) {
             by_document[posting.doc_id] += posting.term_frequency;
         }
     }

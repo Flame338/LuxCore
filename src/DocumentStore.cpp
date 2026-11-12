@@ -202,6 +202,32 @@ void DocumentStore::write(ByteWriter& writer) const {
     }
 }
 
+// Growing the text pool by doubling during a load briefly holds the old and the
+// new copy, so a first pass over the records sizes it. The pass reports nothing:
+// the real pass below validates and fails with the precise message.
+void DocumentStore::reserve_exactly(DocumentStore& store, ByteReader reader, std::uint64_t live_count) {
+    std::uint64_t text_bytes = 0;
+    std::uint64_t record_count = 0;
+    try {
+        for (std::uint64_t i = 0; i < live_count; i++) {
+            reader.varint();
+            const std::size_t field_count = reader.count("field count", 3);
+            for (std::size_t f = 0; f < field_count; f++) {
+                reader.string("field name length");
+                text_bytes += reader.string("field value length").size();
+                reader.u8();
+            }
+            record_count += field_count;
+        }
+    } catch (const std::runtime_error&) {
+        return;
+    }
+    if (text_bytes <= UINT32_MAX && record_count < absent) {
+        store.text.reserve(static_cast<std::size_t>(text_bytes));
+        store.records.reserve(static_cast<std::size_t>(record_count));
+    }
+}
+
 DocumentStore DocumentStore::read(ByteReader& reader) {
     DocumentStore store;
     const std::uint64_t ids = reader.varint_at_most("document id count", INT_MAX);
@@ -217,6 +243,7 @@ DocumentStore DocumentStore::read(ByteReader& reader) {
     }
 
     store.slots.resize(static_cast<std::size_t>(ids));
+    reserve_exactly(store, reader, live_count);
     std::uint64_t id = 0;
     for (std::uint64_t i = 0; i < live_count; i++) {
         const std::uint64_t gap = reader.varint();
@@ -249,4 +276,21 @@ DocumentStore DocumentStore::read(ByteReader& reader) {
     }
     store.live = static_cast<std::size_t>(live_count);
     return store;
+}
+
+void DocumentStore::memory_stats(MemoryStats& out) const {
+    MemoryRow text_row{"store.text"};
+    text_row.items = text.size();
+    text_row.string(text);
+    out.push_back(text_row);
+
+    MemoryRow record_row{"store.records"};
+    record_row.items = records.size();
+    record_row.vector(records);
+    out.push_back(record_row);
+
+    MemoryRow slot_row{"store.slots"};
+    slot_row.items = slots.size();
+    slot_row.vector(slots);
+    out.push_back(slot_row);
 }

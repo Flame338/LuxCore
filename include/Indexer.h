@@ -7,11 +7,25 @@
 #include "InvertedIndex.h"
 
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
+class ByteSink;
+
 struct IndexOptions {
     bool positions = true;
+};
+
+struct FieldText {
+    std::string_view name;
+    std::string_view value;
+    FieldOptions options = FieldOptions::text();
+};
+
+struct PreparedDocument {
+    DocumentTerms terms;
+    Document stored;
 };
 
 class Indexer {
@@ -22,8 +36,15 @@ private:
     DocumentStore doc_store;
     DocumentKeys doc_keys;
 
+    int insert(const PreparedDocument& prepared);
+    void overwrite(int id, const PreparedDocument& prepared);
+
 public:
     explicit Indexer(const std::string& stop_words_path = "", IndexOptions options = {});
+
+    PreparedDocument prepare(std::span<const FieldText> fields) const;
+    PreparedDocument prepare(const Document& document) const;
+    int add_prepared(const std::string& key, const PreparedDocument& prepared);
 
     int add_document(const Document& document);
     int add_document(const std::string& key, const Document& document);
@@ -44,6 +65,8 @@ public:
     const Analyzer& get_analyzer() const { return analyzer; }
     const IndexOptions& get_options() const { return options; }
 
+    MemoryStats memory_stats() const;
+    void serialize(ByteSink& sink) const;
     std::string serialize() const;
     static Indexer deserialize(std::string_view data, const std::string& stop_words_path = "",
                                IndexOptions options = {});

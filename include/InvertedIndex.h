@@ -1,11 +1,15 @@
 #pragma once
 
-#include "FuzzyIndex.h"
+#include "DocumentTerms.h"
+#include "MemoryStats.h"
+#include "PostingStore.h"
+#include "TermDictionary.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -15,30 +19,6 @@
 class ByteWriter;
 class ByteReader;
 class DocumentStore;
-
-struct Posting {
-    int doc_id;
-    int term_frequency;
-};
-
-struct PostingList {
-    static constexpr std::uint32_t no_positions = UINT32_MAX;
-
-    std::vector<Posting> postings;
-    std::vector<std::uint32_t> offsets;
-    std::vector<std::uint32_t> positions;
-
-    bool has_positions(std::size_t index) const {
-        return !offsets.empty() && offsets[index] != no_positions;
-    }
-
-    std::span<const std::uint32_t> positions_of(std::size_t index) const {
-        if (!has_positions(index)) {
-            return {};
-        }
-        return {positions.data() + offsets[index], static_cast<std::size_t>(postings[index].term_frequency)};
-    }
-};
 
 struct IndexMemory {
     std::size_t posting_bytes;
@@ -52,31 +32,25 @@ struct TermPostings {
 
 struct FieldPostings {
     std::string_view field;
-    const std::vector<Posting>* postings;
+    Postings postings;
 };
 
-using TermFreqs =std::unordered_map<std::string, int>;
+using TermFreqs = std::unordered_map<std::string, int>;
 using FieldTermFreqs = std::unordered_map<std::string, TermFreqs>;
 using TermPositions = std::unordered_map<std::string, std::vector<std::uint32_t>>;
 using FieldTermPositions = std::unordered_map<std::string, TermPositions>;
 
+// Terms live once in the dictionary. Each term chains one posting list per
+// field it occurs in, and each document keeps the ids of its posting lists so
+// it can be removed without the text it was built from.
 class InvertedIndex {
     private:
-        using FrequencyMap = std::map<std::string, std::uint32_t, std::less<>>;
-        using PostingListMap = std::map<std::string, PostingList, std::less<>>;
-
         struct FieldIndex {
-            PostingListMap terms;
+            std::string name;
             std::vector<int> lengths;
             long long total_length = 0;
             int documents = 0;
-        };
-
-        using FieldMap = std::map<std::string, FieldIndex, std::less<>>;
-
-        struct IndexedField {
-            FieldMap::iterator field;
-            std::vector<const std::string*> terms;
+            std::size_t terms = 0;
         };
 
         struct StateStamp {
@@ -96,17 +70,28 @@ class InvertedIndex {
             static std::uint64_t next();
         };
 
-        FrequencyMap doc_freqs;
+        TermDictionary terms;
+        PostingStore lists;
         StateStamp stamp;
-        FuzzyIndex fuzzy;
-        FieldMap fields;
-        std::unordered_map<int, std::vector<IndexedField>> doc_fields;
+        std::vector<FieldIndex> fields;
+        std::vector<std::uint32_t> free_fields;
+        std::map<std::string, std::uint32_t, std::less<>> field_ids;
+        // Per document, the ascending ids of its posting lists as varint gaps. A document
+        // without terms holds an empty string, and an absent one holds nothing.
+        std::vector<std::optional<std::string>> doc_lists;
+        std::vector<ListId> scratch_lists;
+        std::vector<TermId> scratch_terms;
         int total_documents = 0;
 
-        static std::vector<const std::string*> distinct_terms(const std::vector<IndexedField>& indexed);
-
-        template <typename TermMap>
-        void add_fields(int doc_id, const std::unordered_map<std::string, TermMap>& fields_to_add);
+        std::uint32_t field_for(std::string_view name);
+        std::optional<std::uint32_t> field_id(std::string_view name) const;
+        ListId list_of(TermId term, std::uint32_t field) const;
+        ListId list_for(TermId term, std::uint32_t field);
+        ListId find_list(std::string_view field, std::string_view term) const;
+        bool in_another_list(TermId term, ListId list, int doc_id) const;
+        void drop_list(ListId list);
+        void retire_field(std::uint32_t field);
+        void remember_lists(int doc_id);
 
     public:
         InvertedIndex() = default;
@@ -115,19 +100,21 @@ class InvertedIndex {
         InvertedIndex(InvertedIndex&&) = default;
         InvertedIndex& operator=(InvertedIndex&&) = default;
 
+        void add_document(int doc_id, const DocumentTerms& document);
         void add_document(int doc_id, const FieldTermFreqs& field_term_freqs);
         void add_document(int doc_id, const FieldTermPositions& field_term_positions);
         void remove_document(int doc_id);
-        std::size_t get_document_frequency(const std::string& term) const;
-        const std::vector<Posting>* get_postings(std::string_view field, const std::string& term) const;
-        const PostingList* get_posting_list(std::string_view field, const std::string& term) const;
+        std::size_t get_document_frequency(std::string_view term) const;
+        std::optional<Postings> get_postings(std::string_view field, std::string_view term) const;
+        std::optional<PostingList> get_posting_list(std::string_view field, std::string_view term) const;
         std::vector<std::string_view> field_names() const;
-        std::vector<FieldPostings> get_field_postings(const std::string& term) const;
+        // In ascending order of field name.
+        std::vector<FieldPostings> get_field_postings(std::string_view term) const;
         std::vector<TermPostings> terms_with_prefix(std::string_view prefix) const;
         std::vector<TermPostings> terms_with_prefix(std::string_view field, std::string_view prefix) const;
 
         std::vector<FuzzyMatch> fuzzy_terms(std::string_view term, std::size_t max_distance) const {
-            return fuzzy.candidates(term, max_distance);
+            return terms.fuzzy(term, max_distance);
         }
 
         std::uint64_t state() const { return stamp.value; }
@@ -136,8 +123,9 @@ class InvertedIndex {
         int get_field_length(std::string_view field, int doc_id) const;
         std::span<const int> get_field_lengths(std::string_view field) const;
         double get_average_field_length(std::string_view field) const;
-        std::size_t get_unique_terms_count() const { return doc_freqs.size(); }
+        std::size_t get_unique_terms_count() const { return terms.size(); }
         IndexMemory memory_usage() const;
+        void memory_stats(MemoryStats& out) const;
 
         void write(ByteWriter& writer) const;
         static InvertedIndex read(ByteReader& reader, const DocumentStore& store, bool keep_positions = true);

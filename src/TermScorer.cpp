@@ -13,9 +13,10 @@ constexpr double completion_weight = 0.5;
 constexpr std::size_t window_postings = 4096;
 
 struct PrefixRun {
-    const std::vector<Posting>* postings;
+    Postings postings;
     double boost;
     bool exact;
+    std::size_t taken = 0;
 };
 
 struct PrefixTally {
@@ -115,27 +116,47 @@ ScoredDocs TermScorer::score_by_doc(const std::string& term) const {
     const double idf_of_term = idf(frequency);
 
     ScoredDocs merged;
-    scope.for_each_field_postings(term, [&](std::string_view field_name, const std::vector<Posting>& field_postings,
+    scope.for_each_field_postings(term, [&](std::string_view field_name, const Postings& field_postings,
                                             double boost) {
         const double field_average = average_length(field_name);
         const std::span<const int> lengths = scope.index.get_field_lengths(field_name);
-        merged.clear();
-        merged.reserve(summed.size() + field_postings.size());
-        auto known = summed.begin();
-        for (const auto& posting : field_postings) {
-            for (; known != summed.end() && known->doc_id < posting.doc_id; ++known) {
-                merged.push_back(*known);
-            }
-            const double tf = weighted_tf(lengths, posting.doc_id, static_cast<double>(posting.term_frequency),
-                                          boost, field_average);
-            if (known != summed.end() && known->doc_id == posting.doc_id) {
-                merged.push_back({posting.doc_id, known->score + tf});
-                ++known;
-            } else {
-                merged.push_back({posting.doc_id, 0.0 + tf});
-            }
+        if (summed.empty()) {
+            summed.resize(field_postings.size());
+            ScoredDoc* out = summed.data();
+            field_postings.for_each_run(0, field_postings.size(), [&](const std::uint32_t* docs,
+                                                                      const auto& frequencies, std::size_t length) {
+                for (std::size_t i = 0; i < length; i++) {
+                    const int doc_id = static_cast<int>(docs[i]);
+                    out[i] = {doc_id, 0.0 + weighted_tf(lengths, doc_id, static_cast<double>(frequencies[i]), boost,
+                                                       field_average)};
+                }
+                out += length;
+            });
+            return;
         }
-        merged.insert(merged.end(), known, summed.end());
+        merged.resize(summed.size() + field_postings.size());
+        ScoredDoc* out = merged.data();
+        const ScoredDoc* known = summed.data();
+        const ScoredDoc* const known_end = known + summed.size();
+        field_postings.for_each_run(0, field_postings.size(), [&](const std::uint32_t* docs, const auto& frequencies,
+                                                                  std::size_t length) {
+            for (std::size_t i = 0; i < length; i++) {
+                const int doc_id = static_cast<int>(docs[i]);
+                for (; known != known_end && known->doc_id < doc_id; ++known) {
+                    *out++ = *known;
+                }
+                const double tf =
+                    weighted_tf(lengths, doc_id, static_cast<double>(frequencies[i]), boost, field_average);
+                if (known != known_end && known->doc_id == doc_id) {
+                    *out++ = {doc_id, known->score + tf};
+                    ++known;
+                } else {
+                    *out++ = {doc_id, 0.0 + tf};
+                }
+            }
+        });
+        out = std::copy(known, known_end, out);
+        merged.resize(static_cast<std::size_t>(out - merged.data()));
         summed.swap(merged);
     });
     for (ScoredDoc& doc : summed) {
@@ -151,9 +172,8 @@ ScoredDocs TermScorer::score(const std::string& term) const {
 ScoredDocs TermScorer::score_prefix(const std::string& term, const std::vector<std::string>& completions) const {
     std::vector<PrefixRun> runs;
     auto add_runs = [&](const std::string& expanded, bool exact) {
-        scope.for_each_field_postings(expanded, [&](std::string_view, const std::vector<Posting>& postings,
-                                                    double boost) {
-            runs.push_back({&postings, boost, exact});
+        scope.for_each_field_postings(expanded, [&](std::string_view, const Postings& postings, double boost) {
+            runs.push_back({postings, boost, exact});
         });
     };
     add_runs(term, true);
@@ -161,11 +181,9 @@ ScoredDocs TermScorer::score_prefix(const std::string& term, const std::vector<s
         add_runs(completion, false);
     }
 
-    std::vector<std::span<const Posting>> pending;
     std::size_t total_postings = 0;
     for (const PrefixRun& run : runs) {
-        pending.emplace_back(*run.postings);
-        total_postings += run.postings->size();
+        total_postings += run.postings.size();
     }
 
     ScoredDocs docs;
@@ -176,24 +194,28 @@ ScoredDocs TermScorer::score_prefix(const std::string& term, const std::vector<s
     std::vector<std::size_t> next_bounds;
     for (;;) {
         int window_end = std::numeric_limits<int>::max();
-        for (const auto& rest : pending) {
-            if (rest.size() > window_postings) {
-                window_end = std::min(window_end, rest[window_postings].doc_id);
+        for (const PrefixRun& run : runs) {
+            if (run.postings.size() - run.taken > window_postings) {
+                window_end = std::min(window_end, run.postings.doc_id(run.taken + window_postings));
             }
         }
 
         bounds.assign(1, 0);
-        for (std::size_t run = 0; run < runs.size(); run++) {
-            const auto taken = std::ranges::lower_bound(pending[run], window_end, {}, &Posting::doc_id);
-            const std::size_t count = taken - pending[run].begin();
+        for (PrefixRun& run : runs) {
+            const std::size_t end = run.postings.lower_bound(window_end, run.taken);
+            const std::size_t count = end - run.taken;
             tallies.resize(bounds.back() + count);
             PrefixTally* out = tallies.data() + bounds.back();
-            for (const Posting& posting : pending[run].first(count)) {
-                const double tf = posting.term_frequency * runs[run].boost;
-                *out++ = runs[run].exact ? PrefixTally{posting.doc_id, tf, 0} : PrefixTally{posting.doc_id, 0, tf};
-            }
+            run.postings.for_each_run(run.taken, end, [&](const std::uint32_t* docs, const auto& frequencies,
+                                                          std::size_t length) {
+                for (std::size_t i = 0; i < length; i++) {
+                    const double tf = frequencies[i] * run.boost;
+                    const int doc_id = static_cast<int>(docs[i]);
+                    *out++ = run.exact ? PrefixTally{doc_id, tf, 0} : PrefixTally{doc_id, 0, tf};
+                }
+            });
             bounds.push_back(bounds.back() + count);
-            pending[run] = pending[run].subspan(count);
+            run.taken = end;
         }
         if (bounds.back() == 0) {
             break;

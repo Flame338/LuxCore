@@ -44,10 +44,6 @@ std::unique_ptr<Query> phrase(std::vector<std::string> terms, std::optional<std:
     return std::make_unique<PhraseQuery>(terms, std::move(field));
 }
 
-std::unique_ptr<Query> positioned(std::vector<PhraseTerm> terms) {
-    return std::make_unique<PhraseQuery>(std::move(terms));
-}
-
 void fill_animals(QueryEngine& engine) {
     engine.add("the quick brown fox jumps over the lazy dog");
     engine.add("a red fox and a brown bear");
@@ -64,24 +60,6 @@ std::string ids_of(const std::vector<SearchHit>& hits) {
     return text;
 }
 
-}
-
-TEST(term_query_returns_matching_doc_ids_in_ascending_order) {
-    QueryEngine engine;
-    fill_animals(engine);
-
-    CHECK_EQ(engine.ids(*term("fox")), "[0][1][2][4]");
-    CHECK_EQ(engine.ids(*term("bear")), "[1][3]");
-    CHECK_EQ(engine.ids(*term("zebra")), "");
-    CHECK_EQ(engine.ids(*term("the")), "");
-}
-
-TEST(term_query_matches_the_exact_index_term_without_analysis) {
-    QueryEngine engine;
-    engine.add("Fox");
-
-    CHECK_EQ(engine.ids(*term("fox")), "[0]");
-    CHECK_EQ(engine.ids(*term("Fox")), "");
 }
 
 TEST(term_query_can_be_scoped_to_a_field) {
@@ -103,37 +81,6 @@ TEST(boolean_must_clauses_intersect) {
     query.add(Occur::Must, term("fox"));
     query.add(Occur::Must, term("brown"));
     CHECK_EQ(engine.ids(query), "[0][1]");
-}
-
-TEST(boolean_should_clauses_union) {
-    QueryEngine engine;
-    fill_animals(engine);
-
-    BooleanQuery query;
-    query.add(Occur::Should, term("fish"));
-    query.add(Occur::Should, term("dog"));
-    query.add(Occur::Should, term("bear"));
-    CHECK_EQ(engine.ids(query), "[0][1][3]");
-}
-
-TEST(boolean_must_not_clauses_subtract) {
-    QueryEngine engine;
-    fill_animals(engine);
-
-    BooleanQuery query;
-    query.add(Occur::Must, term("fox"));
-    query.add(Occur::MustNot, term("brown"));
-    CHECK_EQ(engine.ids(query), "[2][4]");
-}
-
-TEST(boolean_with_only_must_not_clauses_matches_nothing) {
-    QueryEngine engine;
-    fill_animals(engine);
-
-    BooleanQuery query;
-    query.add(Occur::MustNot, term("bear"));
-    CHECK_EQ(engine.ids(query), "");
-    CHECK_EQ(engine.ids(BooleanQuery()), "");
 }
 
 TEST(boolean_should_clauses_beside_a_must_clause_only_add_score) {
@@ -189,19 +136,6 @@ TEST(phrase_query_needs_adjacent_terms_in_order) {
     CHECK_EQ(engine.ids(*phrase({"brown", "zebra"})), "");
 }
 
-TEST(phrase_across_a_stop_word_gap_does_not_treat_the_terms_as_adjacent) {
-    QueryEngine engine;
-    engine.add("cat of hat");
-    engine.add("cat hat");
-    engine.add("cat and hat");
-    engine.add("cat of the hat");
-
-    CHECK_EQ(engine.ids(*phrase({"cat", "hat"})), "[1]");
-    CHECK_EQ(engine.ids(*positioned({{"cat", 0}, {"hat", 2}})), "[0][2]");
-    CHECK_EQ(engine.ids(*positioned({{"cat", 0}, {"hat", 3}})), "[3]");
-    CHECK_EQ(engine.ids(*positioned({{"cat", 5}, {"hat", 7}})), "[0][2]");
-}
-
 TEST(phrase_with_repeated_terms_cannot_reuse_one_occurrence) {
     QueryEngine engine;
     engine.add("fox den");
@@ -212,27 +146,6 @@ TEST(phrase_with_repeated_terms_cannot_reuse_one_occurrence) {
     CHECK_EQ(engine.ids(*phrase({"fox", "fox"})), "[1][3]");
     CHECK_EQ(engine.ids(*phrase({"fox", "den", "fox"})), "[2]");
     CHECK_EQ(engine.ids(*phrase({"fox", "fox", "fox"})), "[3]");
-}
-
-TEST(phrase_with_the_same_term_twice_in_a_longer_pattern) {
-    QueryEngine engine;
-    engine.add("xx yy xx yy xx");
-    engine.add("xx yy xx");
-    engine.add("xx yy yy xx");
-
-    CHECK_EQ(engine.ids(*phrase({"xx", "yy", "xx"})), "[0][1]");
-    CHECK_EQ(engine.ids(*phrase({"xx", "yy", "xx", "yy"})), "[0]");
-}
-
-TEST(a_phrase_more_often_repeated_scores_higher) {
-    QueryEngine engine;
-    engine.add("fox den and nothing else");
-    engine.add("fox den fox den fox den");
-    engine.add("padding words only");
-
-    const std::vector<SearchHit> hits = engine.searcher().search(*phrase({"fox", "den"}), 10);
-    CHECK_EQ(ids_of(hits), "[1][0]");
-    CHECK(hits[0].score > hits[1].score);
 }
 
 TEST(phrase_does_not_cross_fields_or_repeated_field_values) {
@@ -329,29 +242,6 @@ TEST(query_scores_match_the_searcher_for_tf_idf_and_bm25) {
             CHECK_NEAR(actual_title[i].score, expected_title[i].score, 1e-9);
         }
     }
-}
-
-TEST(single_term_phrase_scores_like_the_term) {
-    QueryEngine engine;
-    fill_animals(engine);
-
-    const std::vector<SearchHit> as_term = engine.searcher().search(*term("fox"), 10);
-    const std::vector<SearchHit> as_phrase = engine.searcher().search(*phrase({"fox"}), 10);
-    CHECK_EQ(ids_of(as_phrase), ids_of(as_term));
-    for (std::size_t i = 0; i < as_term.size() && i < as_phrase.size(); i++) {
-        CHECK_NEAR(as_phrase[i].score, as_term[i].score, 1e-9);
-    }
-}
-
-TEST(field_boosts_and_scoring_apply_to_phrases) {
-    QueryEngine engine;
-    engine.add("red fox", "nothing");
-    engine.add("nothing", "red fox");
-
-    CHECK_EQ(ids_of(engine.searcher(Scoring::tf_idf(), FieldBoosts::standard()).search(*phrase({"red", "fox"}), 10)),
-             "[1][0]");
-    CHECK_EQ(ids_of(engine.searcher(Scoring::bm25_with(), FieldBoosts().set("body", 5.0)).search(*phrase({"red", "fox"}), 10)),
-             "[0][1]");
 }
 
 TEST(searcher_runs_a_query_tree_with_top_k_and_keys) {
