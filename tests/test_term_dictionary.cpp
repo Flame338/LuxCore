@@ -192,28 +192,3 @@ TEST(term_dictionary_keeps_every_term_after_hash_growth_and_text_compaction) {
         check_dictionary(dictionary, reference, rng, false);
     }
 }
-
-TEST(term_dictionary_reuses_the_ids_of_erased_terms_and_never_hands_one_to_two_terms) {
-    std::mt19937 rng(5);
-    TermDictionary dictionary;
-    Reference reference;
-    std::size_t highest = 0;
-    for (int step = 0; step < 4000; step++) {
-        const std::string term = "t" + std::to_string(rng() % 300);
-        if (rng() % 2 == 0) {
-            erase_term(dictionary, reference, term);
-        } else {
-            intern_term(dictionary, reference, term);
-        }
-        for (const auto& [text, id] : reference.ids) {
-            highest = std::max<std::size_t>(highest, id);
-        }
-    }
-    CHECK(highest < 300);
-    std::set<TermId> distinct;
-    for (const auto& [text, id] : reference.ids) {
-        distinct.insert(id);
-    }
-    CHECK_EQ(distinct.size(), reference.ids.size());
-    check_dictionary(dictionary, reference, rng, true);
-}

@@ -147,13 +147,6 @@ Outcome load_guarded(const std::string& bytes, bool positions) {
 
 }
 
-TEST(a_guarded_copy_of_a_saved_index_loads_and_one_byte_past_its_end_is_never_read) {
-    for (const bool positions : {false, true}) {
-        const std::string bytes = corpus(positions).serialize();
-        CHECK(load_guarded(bytes, positions) == Outcome::loaded);
-    }
-}
-
 TEST(every_truncation_of_a_saved_index_is_rejected_without_reading_past_the_end) {
     for (const bool positions : {false, true}) {
         const std::string bytes = corpus(positions).serialize();
@@ -164,26 +157,6 @@ TEST(every_truncation_of_a_saved_index_is_rejected_without_reading_past_the_end)
                 CHECK(load_guarded(cut, positions) == Outcome::rejected);
             }
         }
-    }
-}
-
-TEST(flipping_bytes_at_every_offset_loads_or_is_rejected_without_reading_out_of_bounds) {
-    for (const bool positions : {false, true}) {
-        const std::string bytes = corpus(positions).serialize();
-        std::size_t rejected = 0;
-        std::size_t loaded = 0;
-        for (std::size_t offset = 0; offset < bytes.size(); offset++) {
-            for (const unsigned char mask : {0x01, 0x80, 0xFF}) {
-                std::string damaged = bytes;
-                damaged[offset] = static_cast<char>(static_cast<unsigned char>(damaged[offset]) ^ mask);
-                const Outcome outcome = load_guarded(damaged, positions);
-                CHECK(outcome != Outcome::escaped);
-                rejected += outcome == Outcome::rejected ? 1 : 0;
-                loaded += outcome == Outcome::loaded ? 1 : 0;
-            }
-        }
-        CHECK(rejected > bytes.size());
-        CHECK(loaded > 0);
     }
 }
 

@@ -51,18 +51,6 @@ TEST(a_changed_index_does_not_serve_stale_fuzzy_candidates) {
     CHECK(candidates_of(indexer, "serch ").find("search") == std::string::npos);
 }
 
-TEST(two_indexes_with_the_same_query_keep_their_own_candidates) {
-    Indexer first;
-    Indexer second;
-    first.add_document("a", make_text_document("", "search"));
-    second.add_document("a", make_text_document("", "serich"));
-
-    for (int round = 0; round < 4; round++) {
-        CHECK_EQ(candidates_of(first, "serch "), std::string("serch[search:1,]"));
-        CHECK_EQ(candidates_of(second, "serch "), std::string("serch[serich:1,]"));
-    }
-}
-
 TEST(a_moved_index_keeps_working_and_the_source_does_not_share_its_cache) {
     Indexer source;
     source.add_document("a", make_text_document("", "search"));

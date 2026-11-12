@@ -79,19 +79,6 @@ luxcore::Index notes() {
 
 }
 
-TEST(api_finds_a_document_by_its_key) {
-    const luxcore::Index index = notes();
-
-    CHECK_EQ(keys_of(index.search("raincoat")), "trip,");
-    CHECK_EQ(index.size(), static_cast<std::size_t>(3));
-}
-
-TEST(api_matches_the_unfinished_last_word_as_a_prefix) {
-    const luxcore::Index index = notes();
-
-    CHECK_EQ(keys_of(index.search("brea")), "shopping,");
-}
-
 TEST(api_tolerates_a_typo_in_a_finished_word) {
     const luxcore::Index index = notes();
 

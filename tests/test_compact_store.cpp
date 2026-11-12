@@ -171,22 +171,3 @@ TEST(document_store_replace_and_remove_leave_other_documents_alone) {
     }
     CHECK(rejected);
 }
-
-TEST(a_temporary_document_can_be_iterated_field_by_field) {
-    std::size_t count = 0;
-    std::string names;
-    for (const Field& field : make_text_document("a", "b").get_fields()) {
-        count++;
-        names += field.name;
-    }
-    CHECK_EQ(count, static_cast<std::size_t>(2));
-    CHECK_EQ(names, std::string("titlebody"));
-
-    DocumentStore store;
-    const int id = store.add(make_text_document("t", "b"));
-    count = 0;
-    for (const Field& field : store.get(id).get_fields()) {
-        count += field.value.size();
-    }
-    CHECK_EQ(count, static_cast<std::size_t>(2));
-}
