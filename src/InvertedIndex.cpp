@@ -336,7 +336,7 @@ std::vector<FieldPostings> InvertedIndex::get_field_postings(std::string_view te
 std::vector<TermPostings> InvertedIndex::terms_with_prefix(std::string_view prefix) const {
     // Collecting the ids first lets the result be allocated once at its final size.
     std::vector<TermId> ids;
-    terms.for_each_with_prefix(prefix, [&ids](TermId id) { ids.push_back(id); });
+    terms.with_prefix(prefix, ids);
     std::vector<TermPostings> matches;
     matches.reserve(ids.size());
     for (const TermId id : ids) {

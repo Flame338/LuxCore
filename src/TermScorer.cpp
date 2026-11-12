@@ -127,8 +127,8 @@ ScoredDocs TermScorer::score_by_doc(const std::string& term) const {
                                                                       const auto& frequencies, std::size_t length) {
                 for (std::size_t i = 0; i < length; i++) {
                     const int doc_id = static_cast<int>(docs[i]);
-                    out[i] = {doc_id, 0.0 + weighted_tf(lengths, doc_id, static_cast<double>(frequencies[i]), boost,
-                                                       field_average)};
+                    out[i] = {doc_id, weighted_tf(lengths, doc_id, static_cast<double>(frequencies[i]), boost,
+                                                field_average)};
                 }
                 out += length;
             });
@@ -151,7 +151,7 @@ ScoredDocs TermScorer::score_by_doc(const std::string& term) const {
                     *out++ = {doc_id, known->score + tf};
                     ++known;
                 } else {
-                    *out++ = {doc_id, 0.0 + tf};
+                    *out++ = {doc_id, tf};
                 }
             }
         });
