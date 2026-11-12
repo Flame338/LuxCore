@@ -128,6 +128,8 @@ const char* lux_status_message(lux_status status) {
             return "not a valid LuxCore index file";
         case LUX_INVALID_QUERY:
             return "invalid query";
+        case LUX_STATUS_FORCE_INT:
+            break;
     }
     return "unknown status";
 }

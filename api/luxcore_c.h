@@ -28,7 +28,8 @@ typedef enum lux_status {
     LUX_INTERNAL_ERROR = 4,
     LUX_IO_ERROR = 5,
     LUX_INVALID_FORMAT = 6,
-    LUX_INVALID_QUERY = 7
+    LUX_INVALID_QUERY = 7,
+    LUX_STATUS_FORCE_INT = 0x7FFFFFFF
 } lux_status;
 
 typedef struct lux_index lux_index;
