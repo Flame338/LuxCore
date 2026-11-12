@@ -274,9 +274,8 @@ TEST(random_edits_over_many_documents_grow_long_posting_lists_that_match_a_refer
 
 TEST(a_loaded_index_takes_the_same_edits_as_the_one_it_was_saved_from) {
     for (const bool positions : {false, true}) {
-        std::mt19937 rng(5);
         Indexer original("", IndexOptions{.positions = positions});
-        const auto edit = [&rng](Indexer& indexer, unsigned seed) {
+        const auto edit = [](Indexer& indexer, unsigned seed) {
             std::mt19937 local(seed);
             for (int step = 0; step < 300; step++) {
                 const std::string key = "k" + std::to_string(local() % 60);
