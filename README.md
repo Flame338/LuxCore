@@ -1,6 +1,6 @@
 # LuxCore
 
-A copy of Apache Lucene built for learning purposes
+Embeddable full-text search library in C++20. Ranked, typo-tolerant search-as-you-type with snippets and a C API.
 
 ## What LuxCore is
 
