@@ -48,7 +48,7 @@ TEST_OBJS := $(TEST_SRCS:%.cpp=$(BUILD)/%.o)
 SHARED_OBJS := $(LIB_SRCS:%.cpp=$(BUILD)/shared/%.o)
 C_TEST_OBJ := $(BUILD)/tests/c/test_c_api.o
 
-.PHONY: all release run test bench lib shared example stats clean
+.PHONY: all release run test bench lib shared example stats flame clean
 all: $(EXE)
 
 lib: $(LIB)
@@ -60,6 +60,9 @@ example: $(EXAMPLE_EXE)
 
 stats:
 	bash tools/stats.sh
+
+flame:
+	bash tools/flamegraph.sh $(ARGS)
 
 release:
 	$(MAKE) MODE=release
