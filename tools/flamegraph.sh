@@ -35,10 +35,13 @@ make -j"$(nproc)" MODE=release BUILD="$out/obj" \
 args=("$@")
 [ ${#args[@]} -eq 0 ] && args=(--fuzzy 1 --passes 5 --removes 0)
 
-"$perf" record -e cpu-clock -F 999 -g -o "$out/perf.data" -- "$out/obj/luxbench" "${args[@]}"
+data=$(mktemp -d)
+trap 'rm -rf "$data"' EXIT
 
-"$perf" script -i "$out/perf.data" | "$fg/stackcollapse-perf.pl" > "$out/luxbench.folded"
-"$fg/flamegraph.pl" --title "luxbench ${args[*]}" "$out/luxbench.folded" > "$out/luxbench.svg"
+"$perf" record -e cpu-clock:u -F 999 -g --user-callchains -o "$data/perf.data" -- "$out/obj/luxbench" "${args[@]}"
+
+"$perf" script -i "$data/perf.data" |"$fg/stackcollapse-perf.pl" > "$out/luxbench.folded"
+"$fg/flamegraph.pl" --countname ns --title "luxbench ${args[*]}" "$out/luxbench.folded" > "$out/luxbench.svg"
 
 echo "$PWD/$out/luxbench.svg"
 if command -v wslpath > /dev/null; then
