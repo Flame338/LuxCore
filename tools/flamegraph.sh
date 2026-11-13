@@ -33,7 +33,7 @@ make -j"$(nproc)" MODE=release BUILD="$out/obj" \
     "$out/obj/luxbench"
 
 args=("$@")
-[ ${#args[@]} -eq 0 ] && args=(--fuzzy 1 --passes 5 --removes 0)
+[ ${#args[@]} -eq 0 ] && args=(--fuzzy 1 --passes 50 --removes 0)
 
 data=$(mktemp -d)
 trap 'rm -rf "$data"' EXIT
