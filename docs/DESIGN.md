@@ -140,6 +140,12 @@ Readers alone scale to about 7.6 times one reader at 8 threads. The gain flatten
 
 `bench/RESULTS.md` records the machine, flags and numbers of the latency work in one place.
 
+### Flame graphs
+
+`make flame` shows where the benchmark spends CPU time. It runs Linux `perf` in WSL, so install it once in WSL with `sudo apt-get install linux-tools-generic`. Then run `make flame` or, for example, `make flame ARGS="--fuzzy 1 --indexing 1"`. Without `ARGS` it runs `--fuzzy 1 --passes 50 --removes 0`, so keystroke search outweighs building the index.
+
+The script `tools/flamegraph.sh` builds a separate Linux `luxbench` in `build/flame/obj`, so it does not touch `build/release`. It samples with `perf` and writes `build/flame/luxbench.svg`. Open that file in a browser. It downloads Brendan Gregg's FlameGraph scripts into `build/FlameGraph` on the first run.
+
 ### Tests
 
 `tests/test_threads.cpp` holds the thread tests. `make test T=threads` builds and runs them. They are part of `make test`.
