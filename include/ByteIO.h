@@ -182,3 +182,29 @@ public:
         return value;
     }
 };
+
+class AscendingIds {
+private:
+    std::uint64_t limit;
+    const char* not_ascending;
+    const char* out_of_range;
+    std::uint64_t id = 0;
+    bool first = true;
+
+public:
+    AscendingIds(std::uint64_t limit, const char* not_ascending, const char* out_of_range)
+        : limit(limit), not_ascending(not_ascending), out_of_range(out_of_range) {}
+
+    std::uint64_t next(ByteReader& reader) {
+        const std::uint64_t gap = reader.varint();
+        if (!first && gap == 0) {
+            fail_format(not_ascending);
+        }
+        first = false;
+        if (gap >= limit || id + gap >= limit) {
+            fail_format(out_of_range);
+        }
+        id += gap;
+        return id;
+    }
+};
