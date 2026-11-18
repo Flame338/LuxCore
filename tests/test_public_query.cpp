@@ -168,6 +168,15 @@ TEST(public_query_single_words_work_without_positions) {
     CHECK_EQ(sorted_keys(index.search_query("brown -quick")), "dog,");
 }
 
+TEST(public_query_reports_a_syntax_error_before_a_phrase_that_needs_positions) {
+    const luxcore::Index index = phrases(false);
+
+    const QueryFailure failure = query_failure([&] { index.search_query("\"quick brown\" (fox"); });
+    CHECK(failure.thrown);
+    CHECK_EQ(failure.offset, static_cast<std::size_t>(14));
+    CHECK(failure.message.find("parenthesis") != std::string::npos);
+}
+
 TEST(public_query_hyphenated_words_are_phrases_when_positions_are_on) {
     luxcore::Index index(luxcore::IndexConfig{.positions = true});
     index.add("net", "Network", "connect to the wi-fi router");
