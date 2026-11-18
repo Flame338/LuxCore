@@ -168,6 +168,32 @@ TEST(public_query_single_words_work_without_positions) {
     CHECK_EQ(sorted_keys(index.search_query("brown -quick")), "dog,");
 }
 
+TEST(public_query_reports_a_syntax_error_before_a_phrase_that_needs_positions) {
+    const luxcore::Index index = phrases(false);
+
+    const QueryFailure failure = query_failure([&] { index.search_query("\"quick brown\" (fox"); });
+    CHECK(failure.thrown);
+    CHECK_EQ(failure.offset, static_cast<std::size_t>(14));
+    CHECK(failure.message.find("parenthesis") != std::string::npos);
+}
+
+TEST(public_query_points_at_the_phrase_that_needs_positions) {
+    const luxcore::Index index = phrases(false);
+
+    CHECK_EQ(query_failure([&] { index.search_query("quick \"lazy dog\""); }).offset, static_cast<std::size_t>(6));
+    CHECK_EQ(query_failure([&] { index.search_query("fox wi-fi"); }).offset, static_cast<std::size_t>(4));
+    CHECK_EQ(query_failure([&] { index.snippet_query("fox", "body", "quick \"lazy dog\""); }).offset,
+             static_cast<std::size_t>(6));
+}
+
+TEST(public_query_rejects_an_excluded_phrase_without_positions) {
+    const luxcore::Index index = phrases(false);
+
+    const QueryFailure failure = query_failure([&] { index.search_query("quick -\"lazy dog\""); });
+    CHECK(failure.thrown);
+    CHECK_EQ(failure.offset, static_cast<std::size_t>(7));
+}
+
 TEST(public_query_hyphenated_words_are_phrases_when_positions_are_on) {
     luxcore::Index index(luxcore::IndexConfig{.positions = true});
     index.add("net", "Network", "connect to the wi-fi router");
@@ -187,6 +213,29 @@ TEST(public_query_positions_survive_save_and_load_when_load_asks_for_them) {
     const luxcore::Index without_positions = luxcore::Index::load(file.str());
     CHECK(query_failure([&] { without_positions.search_query("\"quick brown\""); }).thrown);
     CHECK_EQ(sorted_keys(without_positions.search_query("quick")), "fox,");
+}
+
+TEST(public_load_with_positions_rejects_a_file_saved_without_them) {
+    const TempFile file("no_positions");
+    phrases(false).save(file.str());
+
+    bool thrown = false;
+    try {
+        luxcore::Index::load(file.str(), luxcore::IndexConfig{.positions = true});
+    } catch (const luxcore::PositionsError&) {
+        thrown = true;
+    }
+    CHECK(thrown);
+    CHECK_EQ(sorted_keys(luxcore::Index::load(file.str()).search_query("quick")), "fox,");
+}
+
+TEST(public_load_with_positions_accepts_a_file_without_postings) {
+    const TempFile file("no_postings");
+    luxcore::Index().save(file.str());
+
+    luxcore::Index loaded = luxcore::Index::load(file.str(), luxcore::IndexConfig{.positions = true});
+    loaded.add("fox", "Animals", "the quick brown fox");
+    CHECK_EQ(sorted_keys(loaded.search_query("\"quick brown\"")), "fox,");
 }
 
 TEST(public_query_a_loaded_index_keeps_working_after_changes) {

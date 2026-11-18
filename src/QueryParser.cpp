@@ -1,12 +1,18 @@
 #include "QueryParser.h"
 
 #include <cctype>
+#include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace {
 
 constexpr int max_depth = 64;
+
+constexpr std::string_view phrases_need_positions =
+    "phrase queries need an index built with IndexConfig{.positions = true}, and words joined by "
+    "a hyphen or similar punctuation count as phrases";
 
 enum class Lexeme { End, LeftParen, RightParen, Plus, Minus, And, Or, Not, Field, Phrase, Word };
 
@@ -90,6 +96,8 @@ class Parser {
 private:
     const Analyzer& analyzer;
     std::vector<Lexed> tokens;
+    bool phrases;
+    std::optional<std::size_t> first_phrase;
     std::size_t cursor = 0;
     int depth = 0;
 
@@ -115,17 +123,20 @@ private:
         }
     }
 
-    std::unique_ptr<Query> analyzed(const std::string& text, const std::optional<std::string>& field) const {
-        const std::vector<Token> found = analyzer.analyze_tokens(text);
+    std::unique_ptr<Query> analyzed(const Lexed& token, const std::optional<std::string>& field) {
+        const std::vector<Token> found = analyzer.analyze_tokens(token.text);
         if (found.empty()) {
             return nullptr;
         }
         if (found.size() == 1) {
             return std::make_unique<TermQuery>(found.front().term, field);
         }
+        if (!phrases && !first_phrase) {
+            first_phrase = token.offset;
+        }
         std::vector<PhraseTerm> terms;
-        for (const Token& token : found) {
-            terms.push_back({token.term, token.position});
+        for (const Token& word : found) {
+            terms.push_back({word.term, word.position});
         }
         return std::make_unique<PhraseQuery>(std::move(terms), field);
     }
@@ -176,7 +187,7 @@ private:
             }
             case Lexeme::Phrase:
             case Lexeme::Word:
-                return analyzed(token.text, field);
+                return analyzed(token, field);
             default:
                 fail("expected a term", token.offset);
         }
@@ -231,7 +242,10 @@ private:
     }
 
 public:
-    Parser(const Analyzer& analyzer, std::vector<Lexed> tokens) : analyzer(analyzer), tokens(std::move(tokens)) {}
+    Parser(const Analyzer& analyzer, std::vector<Lexed> tokens, bool phrases)
+        : analyzer(analyzer), tokens(std::move(tokens)), phrases(phrases) {}
+
+    std::optional<std::size_t> phrase_offset() const { return first_phrase; }
 
     std::unique_ptr<Query> parse() {
         if (peek().kind == Lexeme::End) {
@@ -249,8 +263,11 @@ public:
 
 ParseResult QueryParser::parse(const std::string& text) const {
     try {
-        Parser parser(analyzer, lex(text));
+        Parser parser(analyzer, lex(text), options.phrases);
         std::unique_ptr<Query> query = parser.parse();
+        if (const std::optional<std::size_t> offset = parser.phrase_offset()) {
+            return {nullptr, ParseError{std::string(phrases_need_positions), *offset}};
+        }
         if (!query) {
             query = std::make_unique<BooleanQuery>();
         }

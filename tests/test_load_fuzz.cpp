@@ -224,6 +224,8 @@ TEST(loading_damaged_files_through_the_memory_mapped_path_rejects_them_cleanly) 
                 return Outcome::loaded;
             } catch (const luxcore::FormatError&) {
                 return Outcome::rejected;
+            } catch (const luxcore::PositionsError&) {
+                return config.positions ? Outcome::rejected : Outcome::escaped;
             } catch (const luxcore::IoError&) {
                 return content.empty() ? Outcome::rejected : Outcome::escaped;
             } catch (...) {

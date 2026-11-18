@@ -49,30 +49,20 @@ enum class Syntax { Plain, Query };
 
 struct Index::Impl {
     Indexer indexer;
-    bool positions;
     mutable FairSharedMutex mutex;
 
     explicit Impl(IndexConfig config)
-        : indexer(std::string(), IndexOptions{.positions = config.positions}), positions(config.positions) {}
+        : indexer(std::string(), IndexOptions{.positions = config.positions}) {}
 
     Searcher searcher() const {
         return Searcher(indexer, {.scoring = Scoring::bm25_with(), .fuzziness = Fuzziness::On});
     }
 
     std::unique_ptr<Query> parse(const std::string& text) const {
-        ParseResult parsed = QueryParser(indexer.get_analyzer()).parse(text);
+        const QueryParser parser(indexer.get_analyzer(), {.phrases = indexer.get_options().positions});
+        ParseResult parsed = parser.parse(text);
         if (!parsed.ok()) {
             throw QueryError(parsed.error->message, parsed.error->offset);
-        }
-        if (!positions) {
-            QueryLeaves leaves;
-            parsed.query->add_leaves(leaves);
-            if (!leaves.phrases.empty()) {
-                throw QueryError(
-                    "phrase queries need an index built with IndexConfig{.positions = true}, and words joined by "
-                    "a hyphen or similar punctuation count as phrases",
-                    0);
-            }
         }
         return std::move(parsed.query);
     }
@@ -360,6 +350,10 @@ Index Index::load(const std::string& path, IndexConfig config) {
     try {
         index.impl->indexer =
             Indexer::deserialize(mapped->bytes(), std::string(), IndexOptions{.positions = config.positions});
+    } catch (const MissingPositions& missing) {
+        throw PositionsError("LuxCore: " + path + " holds documents saved without positions, so phrase queries "
+                             "would miss them (" + std::string(missing.what()) + "). Load it without positions, "
+                             "or rebuild it with IndexConfig{.positions = true} and save it again");
     } catch (const std::runtime_error& failure) {
         throw FormatError(failure.what());
     }

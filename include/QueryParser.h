@@ -20,12 +20,18 @@ struct ParseResult {
     bool ok() const { return !error.has_value(); }
 };
 
+struct QueryParserOptions {
+    bool phrases = true;
+};
+
 class QueryParser {
 private:
     const Analyzer& analyzer;
+    QueryParserOptions options;
 
 public:
-    explicit QueryParser(const Analyzer& analyzer) : analyzer(analyzer) {}
+    explicit QueryParser(const Analyzer& analyzer, QueryParserOptions options = {})
+        : analyzer(analyzer), options(options) {}
 
     ParseResult parse(const std::string& text) const;
 };

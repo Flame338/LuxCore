@@ -10,6 +10,7 @@ NOT_FOUND = 2
 IO_ERROR = 5
 INVALID_FORMAT = 6
 INVALID_QUERY = 7
+MISSING_POSITIONS = 8
 
 
 class _Config(ctypes.Structure):

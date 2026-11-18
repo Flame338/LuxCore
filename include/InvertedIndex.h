@@ -11,6 +11,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -43,6 +44,11 @@ using FieldTermPositions = std::unordered_map<std::string, TermPositions>;
 // Terms live once in the dictionary. Each term chains one posting list per
 // field it occurs in, and each document keeps the ids of its posting lists so
 // it can be removed without the text it was built from.
+class MissingPositions : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 class InvertedIndex {
     private:
         struct FieldIndex {
@@ -128,5 +134,5 @@ class InvertedIndex {
         void memory_stats(MemoryStats& out) const;
 
         void write(ByteWriter& writer) const;
-        static InvertedIndex read(ByteReader& reader, const DocumentStore& store, bool keep_positions = true);
+        static InvertedIndex read(ByteReader& reader, const DocumentStore& store, bool positions);
 };
