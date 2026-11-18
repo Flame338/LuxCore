@@ -97,14 +97,14 @@ void DocumentKeys::write(ByteWriter& writer) const {
     }
 }
 
-DocumentKeys DocumentKeys::read(ByteReader& reader, const DocumentStore& store) {
+DocumentKeys DocumentKeys::read(ByteReader& reader, const FileIds& ids) {
     DocumentKeys result;
     const std::size_t count = reader.count("key count", 2);
     result.reserve(count);
-    AscendingIds ids(store.id_limit(), "key ids are not ascending", "key is bound to a missing document");
+    AscendingIds file_ids(ids.limit(), "key ids are not ascending", "key is bound to a missing document");
     for (std::size_t i = 0; i < count; i++) {
-        const std::uint64_t id = ids.next(reader);
-        if (!store.contains(static_cast<int>(id))) {
+        const std::uint32_t id = ids[file_ids.next(reader)];
+        if (id == FileIds::missing) {
             fail_format("key is bound to a missing document");
         }
         const std::string key(reader.string("key length"));

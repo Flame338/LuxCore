@@ -12,7 +12,7 @@
 
 class ByteWriter;
 class ByteReader;
-class DocumentStore;
+class FileIds;
 
 class DocumentKeys {
 private:
@@ -60,5 +60,5 @@ public:
 
     void memory_stats(MemoryStats& out) const;
     void write(ByteWriter& writer) const;
-    static DocumentKeys read(ByteReader& reader, const DocumentStore& store);
+    static DocumentKeys read(ByteReader& reader, const FileIds& ids);
 };

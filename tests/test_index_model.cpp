@@ -282,13 +282,16 @@ TEST(a_loaded_index_takes_the_same_edits_as_the_one_it_was_saved_from) {
         };
         edit(original, 1);
 
-        const std::string saved = original.serialize();
-        Indexer loaded = Indexer::deserialize(saved, "", IndexOptions{.positions = positions});
-        CHECK_EQ(loaded.serialize() == saved, true);
+        const auto reloaded = [positions](const Indexer& indexer) {
+            return Indexer::deserialize(indexer.serialize(), "", IndexOptions{.positions = positions}).serialize();
+        };
+        Indexer loaded = Indexer::deserialize(original.serialize(), "", IndexOptions{.positions = positions});
+        CHECK_EQ(loaded.serialize() == reloaded(original), true);
+        CHECK_EQ(reloaded(loaded) == loaded.serialize(), true);
 
         edit(original, 2);
         edit(loaded, 2);
-        CHECK_EQ(loaded.serialize() == original.serialize(), true);
+        CHECK_EQ(reloaded(loaded) == reloaded(original), true);
         CHECK_EQ(loaded.get_index().get_unique_terms_count(), original.get_index().get_unique_terms_count());
     }
 }

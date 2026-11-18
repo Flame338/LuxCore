@@ -111,6 +111,9 @@ void DocumentStore::compact() {
 }
 
 int DocumentStore::add(const Document& document) {
+    if (slots.size() >= static_cast<std::size_t>(INT_MAX)) {
+        throw std::length_error("DocumentStore: every document id is used, save and load the index to renumber them");
+    }
     slots.emplace_back();
     try {
         append(slots.back(), document);
@@ -228,7 +231,19 @@ void DocumentStore::reserve_exactly(DocumentStore& store, ByteReader reader, std
     }
 }
 
-DocumentStore DocumentStore::read(ByteReader& reader) {
+FileIds FileIds::of(const DocumentStore& store) {
+    FileIds ids;
+    ids.dense.assign(store.id_limit(), missing);
+    std::uint32_t next = 0;
+    for (std::size_t id = 0; id < store.id_limit(); id++) {
+        if (store.contains(static_cast<int>(id))) {
+            ids.dense[id] = next++;
+        }
+    }
+    return ids;
+}
+
+DocumentStore DocumentStore::read(ByteReader& reader, FileIds& file_ids) {
     DocumentStore store;
     const std::uint64_t ids = reader.varint_at_most("document id count", INT_MAX);
     const std::uint64_t live_count = reader.varint_at_most("document count", ids);
@@ -242,13 +257,14 @@ DocumentStore DocumentStore::read(ByteReader& reader) {
                     std::to_string(reader.total_size()) + " bytes");
     }
 
-    store.slots.resize(static_cast<std::size_t>(ids));
+    store.slots.resize(static_cast<std::size_t>(live_count));
+    file_ids.dense.assign(static_cast<std::size_t>(ids), FileIds::missing);
     reserve_exactly(store, reader, live_count);
     AscendingIds document_ids(ids, "document ids are not ascending", "document id is out of range");
     for (std::uint64_t i = 0; i < live_count; i++) {
-        const std::uint64_t id = document_ids.next(reader);
+        file_ids.dense[static_cast<std::size_t>(document_ids.next(reader))] = static_cast<std::uint32_t>(i);
         const std::size_t field_count = reader.count("field count", 3);
-        Slot& slot = store.slots[static_cast<std::size_t>(id)];
+        Slot& slot = store.slots[static_cast<std::size_t>(i)];
         slot.first = static_cast<std::uint32_t>(store.records.size());
         for (std::size_t f = 0; f < field_count; f++) {
             const std::string_view name = reader.string("field name length");

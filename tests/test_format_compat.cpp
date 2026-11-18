@@ -9,7 +9,7 @@
 
 // Files written by the core that predates the term dictionary, the trie and the posting store,
 // from the documents a.txt, b.md and c.rs. Both must keep loading and must serialize to the
-// same bytes, because the layout of format version 1 did not change.
+// same content bytes under a version 2 header, because the content layout did not change.
 namespace {
 
 const unsigned char original_core_without_positions[] = {
@@ -380,7 +380,11 @@ void check_original_file(std::string_view original, bool positions) {
     CHECK_EQ(static_cast<int>(static_cast<unsigned char>(original[4])), 1);
 
     Indexer loaded = Indexer::deserialize(original, "", IndexOptions{.positions = positions});
-    CHECK(loaded.serialize() == original);
+    const std::string saved = loaded.serialize();
+    CHECK_EQ(static_cast<int>(static_cast<unsigned char>(saved[4])), 2);
+    CHECK(saved.substr(8, 8) == original.substr(8, 8));
+    CHECK(saved.substr(24) == original.substr(16));
+    CHECK(Indexer::deserialize(saved, "", IndexOptions{.positions = positions}).serialize() == saved);
     CHECK_EQ(loaded.get_index().get_total_documents(), 3);
     CHECK(loaded.find_id("a.txt").has_value());
     CHECK(loaded.find_id("b.md").has_value());

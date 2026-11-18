@@ -19,7 +19,7 @@
 
 class ByteWriter;
 class ByteReader;
-class DocumentStore;
+class FileIds;
 
 struct IndexMemory {
     std::size_t posting_bytes;
@@ -139,5 +139,5 @@ class InvertedIndex {
         void memory_stats(MemoryStats& out) const;
 
         void write(ByteWriter& writer) const;
-        static InvertedIndex read(ByteReader& reader, const DocumentStore& store, Positions positions);
+        static InvertedIndex read(ByteReader& reader, const FileIds& ids, std::size_t documents, Positions positions);
 };

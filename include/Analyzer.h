@@ -3,6 +3,7 @@
 #include "TokenFilter.h"
 #include "Tokenizer.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -33,6 +34,7 @@ public:
     AnalyzedQuery analyze_query(const std::string& text) const;
     std::vector<Token> analyze_tokens(std::string_view text) const;
     AnalyzedTokenQuery analyze_query_tokens(const std::string& text) const;
+    std::uint64_t fingerprint() const;
 };
 
 Analyzer make_standard_analyzer(const std::string& stop_words_path = "");
