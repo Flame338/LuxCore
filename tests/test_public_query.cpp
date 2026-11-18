@@ -215,6 +215,29 @@ TEST(public_query_positions_survive_save_and_load_when_load_asks_for_them) {
     CHECK_EQ(sorted_keys(without_positions.search_query("quick")), "fox,");
 }
 
+TEST(public_load_with_positions_rejects_a_file_saved_without_them) {
+    const TempFile file("no_positions");
+    phrases(false).save(file.str());
+
+    bool thrown = false;
+    try {
+        luxcore::Index::load(file.str(), luxcore::IndexConfig{.positions = true});
+    } catch (const luxcore::PositionsError&) {
+        thrown = true;
+    }
+    CHECK(thrown);
+    CHECK_EQ(sorted_keys(luxcore::Index::load(file.str()).search_query("quick")), "fox,");
+}
+
+TEST(public_load_with_positions_accepts_a_file_without_postings) {
+    const TempFile file("no_postings");
+    luxcore::Index().save(file.str());
+
+    luxcore::Index loaded = luxcore::Index::load(file.str(), luxcore::IndexConfig{.positions = true});
+    loaded.add("fox", "Animals", "the quick brown fox");
+    CHECK_EQ(sorted_keys(loaded.search_query("\"quick brown\"")), "fox,");
+}
+
 TEST(public_query_a_loaded_index_keeps_working_after_changes) {
     const TempFile file("changes");
     phrases(true).save(file.str());

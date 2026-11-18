@@ -663,6 +663,29 @@ static void phrase_queries_need_positions(void) {
     lux_index_free(positional);
 }
 
+static void load_with_positions_rejects_a_file_saved_without_them(void) {
+    char path[512];
+    lux_index* plain = phrase_notes(0);
+    lux_index* loaded = NULL;
+    lux_config config;
+
+    temp_path(path, sizeof path, "luxcore_c_missing_positions.lux");
+    remove(path);
+    CHECK_STATUS(lux_index_save(plain, path, strlen(path)), LUX_OK);
+
+    config.positions = 1;
+    CHECK_STATUS(lux_index_load_with(path, strlen(path), &config, &loaded), LUX_MISSING_POSITIONS);
+    CHECK(loaded == NULL);
+
+    config.positions = 0;
+    CHECK_STATUS(lux_index_load_with(path, strlen(path), &config, &loaded), LUX_OK);
+    CHECK(loaded != NULL);
+
+    lux_index_free(plain);
+    lux_index_free(loaded);
+    remove(path);
+}
+
 static void create_with_a_null_config_uses_the_defaults(void) {
     lux_index* index = NULL;
     lux_hits* hits = NULL;
@@ -1088,6 +1111,7 @@ static void every_status_has_a_message(void) {
     CHECK(strlen(lux_status_message(LUX_IO_ERROR)) > 0);
     CHECK(strlen(lux_status_message(LUX_INVALID_FORMAT)) > 0);
     CHECK(strlen(lux_status_message(LUX_INVALID_QUERY)) > 0);
+    CHECK(strcmp(lux_status_message(LUX_MISSING_POSITIONS), lux_status_message((lux_status)99)) != 0);
     CHECK(strlen(lux_status_message((lux_status)99)) > 0);
 }
 
@@ -1121,6 +1145,8 @@ int main(void) {
         {"search_query_offset_counts_bytes_not_code_points", search_query_offset_counts_bytes_not_code_points},
         {"search_query_offset_is_zero_unless_the_query_is_invalid", search_query_offset_is_zero_unless_the_query_is_invalid},
         {"phrase_queries_need_positions", phrase_queries_need_positions},
+        {"load_with_positions_rejects_a_file_saved_without_them",
+         load_with_positions_rejects_a_file_saved_without_them},
         {"create_with_a_null_config_uses_the_defaults", create_with_a_null_config_uses_the_defaults},
         {"positions_survive_save_and_load_with_a_config", positions_survive_save_and_load_with_a_config},
         {"snippet_marks_what_search_matched", snippet_marks_what_search_matched},

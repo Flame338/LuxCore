@@ -84,7 +84,7 @@ TEST(positionless_indexer_removes_and_replaces_documents) {
     }
 }
 
-TEST(a_positioned_file_loads_without_positions_and_a_positionless_one_loads_with_them) {
+TEST(a_positioned_file_loads_without_positions_and_a_positionless_one_only_without) {
     Indexer positioned;
     add_corpus(positioned);
     const std::string full = positioned.serialize();
@@ -99,7 +99,15 @@ TEST(a_positioned_file_loads_without_positions_and_a_positionless_one_loads_with
     const std::string small = stripped.serialize();
     CHECK(small.size() < full.size());
 
-    const Indexer reloaded = Indexer::deserialize(small);
+    bool missing = false;
+    try {
+        Indexer::deserialize(small, "", IndexOptions{.positions = true});
+    } catch (const MissingPositions&) {
+        missing = true;
+    }
+    CHECK(missing);
+
+    const Indexer reloaded = Indexer::deserialize(small, "", IndexOptions{.positions = false});
     CHECK_EQ(reloaded.get_index().memory_usage().position_bytes, static_cast<std::size_t>(0));
     for (const char* query : {"cat", "dog", "tre", "cta"}) {
         CHECK_EQ(ranking(reloaded, query), ranking(positioned, query));
@@ -148,8 +156,15 @@ TEST(the_public_index_saves_a_file_without_positions) {
     const std::string bytes = read_file(path);
     std::filesystem::remove(path);
 
-    const Indexer loaded = Indexer::deserialize(bytes);
+    bool missing = false;
+    try {
+        Indexer::deserialize(bytes, "", IndexOptions{.positions = true});
+    } catch (const MissingPositions&) {
+        missing = true;
+    }
+    CHECK(missing);
+
+    const Indexer loaded = Indexer::deserialize(bytes, "", IndexOptions{.positions = false});
     CHECK_EQ(loaded.get_index().memory_usage().position_bytes, static_cast<std::size_t>(0));
-    CHECK(!loaded.get_index().get_posting_list("body", "cat")->has_positions(0));
     CHECK_EQ(loaded.get_index().get_total_documents(), 2);
 }

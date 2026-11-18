@@ -238,7 +238,7 @@ std::string framed(const std::string& body) {
 }
 
 std::string load_failure(const std::string& bytes) {
-    return failure_of([&] { Indexer::deserialize(bytes); });
+    return failure_of([&] { Indexer::deserialize(bytes, "", IndexOptions{.positions = false}); });
 }
 
 void one_document_store(ByteWriter& writer) {
@@ -354,31 +354,54 @@ TEST(round_trip_keeps_every_observable_result) {
     CHECK_EQ(results_of(loaded), results);
 }
 
-TEST(round_trip_of_postings_without_positions_and_mixed_postings) {
-    DocumentStore store;
-    for (int i = 0; i < 5; i++) {
-        store.add(Document());
-    }
-    store.remove(3);
-
+InvertedIndex mixed_positions_index() {
     InvertedIndex index;
     index.add_document(0, FieldTermFreqs{{"body", TermFreqs{{"cat", 3}, {"dog", 1}}}});
     index.add_document(1, FieldTermPositions{{"body", TermPositions{{"cat", {4, 9, 9, 20}}, {"fox", {0}}}}});
     index.add_document(2, FieldTermFreqs{{"body", TermFreqs{{"cat", 2}}}, {"title", TermFreqs{{"cat", 1}, {"owl", 7}}}});
     index.add_document(4, FieldTermFreqs{});
+    return index;
+}
 
+DocumentStore five_documents_without_3() {
+    DocumentStore store;
+    for (int i = 0; i < 5; i++) {
+        store.add(Document());
+    }
+    store.remove(3);
+    return store;
+}
+
+TEST(reading_without_positions_keeps_frequencies_and_drops_every_position) {
+    const DocumentStore store = five_documents_without_3();
     ByteWriter writer;
-    index.write(writer);
+    mixed_positions_index().write(writer);
     ByteReader reader(writer.bytes());
-    const InvertedIndex loaded = InvertedIndex::read(reader, store);
+    const InvertedIndex loaded = InvertedIndex::read(reader, store, false);
 
     CHECK(reader.at_end());
-    CHECK_EQ(describe_index(loaded, 6), describe_index(index, 6));
     CHECK_EQ(loaded.get_total_documents(), 4);
-    CHECK(loaded.get_posting_list("body", "cat")->positions_of(0).empty());
-    CHECK_EQ(loaded.get_posting_list("body", "cat")->positions_of(1).size(), static_cast<std::size_t>(4));
+    CHECK_EQ(loaded.get_posting_list("body", "cat")->postings.size(), static_cast<std::size_t>(3));
+    CHECK_EQ(loaded.get_posting_list("body", "cat")->postings[1].term_frequency, 4);
+    CHECK(loaded.get_posting_list("body", "cat")->positions_of(1).empty());
     CHECK_EQ(loaded.get_field_length("body", 0), 4);
     CHECK_EQ(loaded.get_field_length("title", 2), 8);
+}
+
+TEST(reading_with_positions_rejects_a_posting_saved_without_them) {
+    const DocumentStore store = five_documents_without_3();
+    ByteWriter writer;
+    mixed_positions_index().write(writer);
+    ByteReader reader(writer.bytes());
+
+    std::string message;
+    try {
+        InvertedIndex::read(reader, store, true);
+    } catch (const MissingPositions& missing) {
+        message = missing.what();
+    }
+    CHECK(mentions(message, "document 0"));
+    CHECK(mentions(message, "\"cat\""));
 }
 
 TEST(a_loaded_index_survives_a_second_save_and_load_after_changes) {
@@ -467,7 +490,7 @@ TEST(random_garbage_behind_a_valid_header_is_rejected_or_loaded_safely) {
 }
 
 TEST(crafted_minimal_files_load_and_their_damaged_variants_are_rejected) {
-    const Indexer valid = Indexer::deserialize(with_postings(0, 2));
+    const Indexer valid = Indexer::deserialize(with_postings(0, 2), "", IndexOptions{.positions = false});
     CHECK_EQ(valid.get_index().get_total_documents(), 1);
     CHECK_EQ(valid.get_index().get_postings("t", "a")->size(), static_cast<std::size_t>(1));
 

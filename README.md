@@ -102,7 +102,7 @@ luxcore::Index again = luxcore::Index::load("notes.lux");
 
 A loaded index gives the same results as the one you saved, and you can keep adding to it. On 100,000 documents, loading took about 11 times less time than building the index again.
 
-- `load` drops phrase positions. Pass `IndexConfig{.positions = true}` to keep them.
+- `load` drops phrase positions. Pass `IndexConfig{.positions = true}` to keep them. A file saved without positions then throws `luxcore::PositionsError`, so phrase queries never miss part of the index.
 - A damaged or truncated file throws `FormatError`. It never crashes the program.
 - A file only loads in the library version that wrote it. Rebuild the index after an upgrade.
 - `save` writes straight to the path. To be safe from a crash during a save, write to a temporary name and rename it.

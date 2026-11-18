@@ -350,6 +350,10 @@ Index Index::load(const std::string& path, IndexConfig config) {
     try {
         index.impl->indexer =
             Indexer::deserialize(mapped->bytes(), std::string(), IndexOptions{.positions = config.positions});
+    } catch (const MissingPositions& missing) {
+        throw PositionsError("LuxCore: " + path + " holds documents saved without positions, so phrase queries "
+                             "would miss them (" + std::string(missing.what()) + "). Load it without positions, "
+                             "or rebuild it with IndexConfig{.positions = true} and save it again");
     } catch (const std::runtime_error& failure) {
         throw FormatError(failure.what());
     }

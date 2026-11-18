@@ -49,6 +49,8 @@ lux_status guarded(Body body, std::size_t* error_offset = nullptr) {
         return LUX_IO_ERROR;
     } catch (const luxcore::FormatError&) {
         return LUX_INVALID_FORMAT;
+    } catch (const luxcore::PositionsError&) {
+        return LUX_MISSING_POSITIONS;
     } catch (const std::bad_alloc&) {
         return LUX_OUT_OF_MEMORY;
     } catch (...) {
@@ -129,6 +131,8 @@ const char* lux_status_message(lux_status status) {
             return "not a valid LuxCore index file";
         case LUX_INVALID_QUERY:
             return "invalid query";
+        case LUX_MISSING_POSITIONS:
+            return "the index file holds documents saved without positions";
         case LUX_STATUS_FORCE_INT:
             break;
     }

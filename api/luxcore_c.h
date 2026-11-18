@@ -29,6 +29,7 @@ typedef enum lux_status {
     LUX_IO_ERROR = 5,
     LUX_INVALID_FORMAT = 6,
     LUX_INVALID_QUERY = 7,
+    LUX_MISSING_POSITIONS = 8,
     LUX_STATUS_FORCE_INT = 0x7FFFFFFF
 } lux_status;
 

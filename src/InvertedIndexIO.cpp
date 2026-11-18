@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -23,8 +24,8 @@ struct ReadList {
     PositionList positions;
 };
 
-void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& tallies, bool keep_positions,
-                       ReadList& list) {
+void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& tallies, bool positions,
+                       std::string_view term, ReadList& list) {
     const std::size_t count = reader.count("posting count", 2);
     if (count == 0) {
         fail_format("term without postings");
@@ -34,7 +35,6 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
     list.positions = PositionList{};
     list.docs.reserve(count);
     list.frequencies.reserve(count);
-    bool any_positions = false;
     std::size_t position_count = 0;
 
     const std::uint64_t id_limit = store.id_limit();
@@ -66,11 +66,7 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
             if (position_count + frequency >= PositionList::no_positions) {
                 fail_format("too many positions in one posting list");
             }
-            if (keep_positions) {
-                if (!any_positions) {
-                    list.positions.offsets.assign(i, PositionList::no_positions);
-                    any_positions = true;
-                }
+            if (positions) {
                 list.positions.offsets.push_back(static_cast<std::uint32_t>(list.positions.positions.size()));
             }
             position_count += frequency;
@@ -80,12 +76,13 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
                 if (position > UINT32_MAX) {
                     fail_format("position is out of range");
                 }
-                if (keep_positions) {
+                if (positions) {
                     list.positions.positions.push_back(static_cast<std::uint32_t>(position));
                 }
             }
-        } else if (any_positions) {
-            list.positions.offsets.push_back(PositionList::no_positions);
+        } else if (positions) {
+            throw MissingPositions("document " + std::to_string(doc_id) +
+                                   " was saved without positions for the term \"" + std::string(term) + "\"");
         }
 
         list.docs.push_back(static_cast<std::uint32_t>(doc_id));
@@ -142,7 +139,7 @@ void InvertedIndex::write(ByteWriter& writer) const {
     }
 }
 
-InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store, bool keep_positions) {
+InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store, bool positions) {
     InvertedIndex result;
     const std::size_t id_limit = store.id_limit();
     Tallies tallies{std::vector<long long>(id_limit), std::vector<int>(id_limit)};
@@ -170,7 +167,7 @@ InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store
                 fail_format("terms are not in ascending order");
             }
             previous = term;
-            read_posting_list(reader, store, tallies, keep_positions, read);
+            read_posting_list(reader, store, tallies, positions, term, read);
 
             const TermId id = result.terms.intern(term);
             const ListId list = result.list_for(id, field_number);
