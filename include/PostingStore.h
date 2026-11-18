@@ -131,7 +131,7 @@ class Postings {
 };
 
 struct PositionList {
-    static constexpr std::uint32_t no_positions = UINT32_MAX;
+    static constexpr std::uint32_t limit = UINT32_MAX;
 
     std::vector<std::uint32_t> offsets;
     std::vector<std::uint32_t> positions;
@@ -141,13 +141,10 @@ struct PostingList {
     Postings postings;
     const PositionList* stored_positions = nullptr;
 
-    bool has_positions(std::size_t index) const {
-        return stored_positions != nullptr && !stored_positions->offsets.empty() &&
-               stored_positions->offsets[index] != PositionList::no_positions;
-    }
+    bool has_positions() const { return stored_positions != nullptr && !stored_positions->offsets.empty(); }
 
     std::span<const std::uint32_t> positions_of(std::size_t index) const {
-        if (!has_positions(index)) {
+        if (!has_positions()) {
             return {};
         }
         return {stored_positions->positions.data() + stored_positions->offsets[index],
@@ -187,8 +184,6 @@ class PostingStore {
         static std::size_t block_bytes(std::uint32_t capacity, std::uint8_t width);
         Postings view(const List& list) const;
         void store(List& list, std::span<const std::uint32_t> docs, std::span<const std::uint32_t> frequencies);
-        void insert_positions(ListId id, std::size_t index, std::size_t size, std::span<const std::uint32_t> positions,
-                              bool positioned);
         void erase_positions(ListId id, std::size_t index, std::uint32_t frequency);
         void release();
 
@@ -220,7 +215,7 @@ class PostingStore {
         PostingList posting_list(ListId id) const;
 
         // The document must not be in the list. Positions are ascending and as many as frequency.
-        void insert(ListId id, int doc_id, std::uint32_t frequency);
+        std::size_t insert(ListId id, int doc_id, std::uint32_t frequency);
         void insert(ListId id, int doc_id, std::span<const std::uint32_t> positions);
         void erase(ListId id, int doc_id);
         // Fills an empty list with postings already in ascending doc id order.

@@ -44,6 +44,8 @@ using FieldTermPositions = std::unordered_map<std::string, TermPositions>;
 // Terms live once in the dictionary. Each term chains one posting list per
 // field it occurs in, and each document keeps the ids of its posting lists so
 // it can be removed without the text it was built from.
+enum class Positions { Off, On };
+
 class MissingPositions : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -76,6 +78,7 @@ class InvertedIndex {
             static std::uint64_t next();
         };
 
+        Positions positions;
         TermDictionary terms;
         PostingStore lists;
         StateStamp stamp;
@@ -100,12 +103,14 @@ class InvertedIndex {
         void remember_lists(int doc_id);
 
     public:
-        InvertedIndex() = default;
+        explicit InvertedIndex(Positions positions = Positions::Off) : positions(positions) {}
         InvertedIndex(const InvertedIndex&) = delete;
         InvertedIndex& operator=(const InvertedIndex&) = delete;
         InvertedIndex(InvertedIndex&&) = default;
         InvertedIndex& operator=(InvertedIndex&&) = default;
 
+        bool positioned() const { return positions == Positions::On; }
+        bool accepts(const DocumentTerms& document) const { return document.positioned == positioned(); }
         void add_document(int doc_id, const DocumentTerms& document);
         void add_document(int doc_id, const FieldTermFreqs& field_term_freqs);
         void add_document(int doc_id, const FieldTermPositions& field_term_positions);
@@ -134,5 +139,5 @@ class InvertedIndex {
         void memory_stats(MemoryStats& out) const;
 
         void write(ByteWriter& writer) const;
-        static InvertedIndex read(ByteReader& reader, const DocumentStore& store, bool positions);
+        static InvertedIndex read(ByteReader& reader, const DocumentStore& store, Positions positions);
 };

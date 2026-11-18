@@ -72,7 +72,7 @@ TEST(a_keyword_field_has_a_single_position) {
 }
 
 TEST(removing_a_document_drops_its_positions_and_keeps_the_others_intact) {
-    InvertedIndex index;
+    InvertedIndex index(Positions::On);
     index.add_document(1, body({{"fox", {0, 4}}, {"den", {1}}}));
     index.add_document(2, body({{"fox", {2}}}));
     index.add_document(3, body({{"fox", {1, 5, 9}}}));
@@ -90,7 +90,7 @@ TEST(removing_a_document_drops_its_positions_and_keeps_the_others_intact) {
 }
 
 TEST(replacing_a_document_swaps_its_positions) {
-    InvertedIndex index;
+    InvertedIndex index(Positions::On);
     index.add_document(1, body({{"fox", {0, 3}}}));
     index.add_document(2, body({{"fox", {7}}}));
     index.add_document(1, body({{"fox", {5}}, {"den", {6}}}));
@@ -100,7 +100,7 @@ TEST(replacing_a_document_swaps_its_positions) {
 }
 
 TEST(positions_are_stored_in_ascending_order) {
-    InvertedIndex index;
+    InvertedIndex index(Positions::On);
     index.add_document(1, body({{"fox", {9, 2, 5}}}));
 
     CHECK_EQ(positions_text(index, "body", "fox"), "(1:2,5,9,)");

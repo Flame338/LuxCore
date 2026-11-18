@@ -59,7 +59,7 @@ struct Index::Impl {
     }
 
     std::unique_ptr<Query> parse(const std::string& text) const {
-        const QueryParser parser(indexer.get_analyzer(), {.phrases = indexer.get_options().positions});
+        const QueryParser parser(indexer.get_analyzer(), {.phrases = indexer.get_index().positioned()});
         ParseResult parsed = parser.parse(text);
         if (!parsed.ok()) {
             throw QueryError(parsed.error->message, parsed.error->offset);

@@ -30,7 +30,6 @@ struct PreparedDocument {
 
 class Indexer {
 private:
-    IndexOptions options;
     Analyzer analyzer;
     InvertedIndex inverted_index;
     DocumentStore doc_store;
@@ -63,7 +62,6 @@ public:
         return doc_store.value_of(id, field);
     }
     const Analyzer& get_analyzer() const { return analyzer; }
-    const IndexOptions& get_options() const { return options; }
 
     MemoryStats memory_stats() const;
     void serialize(ByteSink& sink) const;
