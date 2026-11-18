@@ -1,37 +1,10 @@
 #include "InvertedIndex.h"
 
+#include "ListIdGaps.h"
+
 #include <algorithm>
 #include <atomic>
 #include <stdexcept>
-
-namespace {
-
-void append_varint(std::string& out, std::uint32_t value) {
-    while (value >= 0x80) {
-        out.push_back(static_cast<char>(value | 0x80));
-        value >>= 7;
-    }
-    out.push_back(static_cast<char>(value));
-}
-
-void decode_list_ids(std::string_view encoded, std::vector<ListId>& out) {
-    out.clear();
-    ListId id = 0;
-    for (std::size_t at = 0; at < encoded.size();) {
-        std::uint32_t gap = 0;
-        for (int shift = 0;; shift += 7) {
-            const std::uint8_t byte = static_cast<std::uint8_t>(encoded[at++]);
-            gap |= static_cast<std::uint32_t>(byte & 0x7F) << shift;
-            if ((byte & 0x80) == 0) {
-                break;
-            }
-        }
-        id += gap;
-        out.push_back(id);
-    }
-}
-
-}
 
 std::uint64_t InvertedIndex::StateStamp::next() {
     static std::atomic<std::uint64_t> counter{1};
@@ -130,7 +103,7 @@ void InvertedIndex::remember_lists(int doc_id) {
     encoded.reserve(scratch_lists.size() * 2);
     ListId previous = 0;
     for (const ListId list : scratch_lists) {
-        append_varint(encoded, list - previous);
+        append_list_gap(encoded, list - previous);
         previous = list;
     }
     const std::size_t slot = static_cast<std::size_t>(doc_id);
@@ -251,7 +224,7 @@ void InvertedIndex::remove_document(int doc_id) {
     }
     stamp.touch();
 
-    decode_list_ids(*doc_lists[slot], scratch_lists);
+    decode_list_gaps(*doc_lists[slot], scratch_lists);
     std::vector<std::uint32_t> touched;
     for (const ListId list : scratch_lists) {
         const TermId term = lists.term_of(list);

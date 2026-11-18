@@ -244,20 +244,9 @@ DocumentStore DocumentStore::read(ByteReader& reader) {
 
     store.slots.resize(static_cast<std::size_t>(ids));
     reserve_exactly(store, reader, live_count);
-    std::uint64_t id = 0;
+    AscendingIds document_ids(ids, "document ids are not ascending", "document id is out of range");
     for (std::uint64_t i = 0; i < live_count; i++) {
-        const std::uint64_t gap = reader.varint();
-        if (i > 0 && gap == 0) {
-            fail_format("document ids are not ascending");
-        }
-        if (gap >= ids) {
-            fail_format("document id is out of range");
-        }
-        id += gap;
-        if (id >= ids) {
-            fail_format("document id is out of range");
-        }
-
+        const std::uint64_t id = document_ids.next(reader);
         const std::size_t field_count = reader.count("field count", 3);
         Slot& slot = store.slots[static_cast<std::size_t>(id)];
         slot.first = static_cast<std::uint32_t>(store.records.size());

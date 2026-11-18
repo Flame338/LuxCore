@@ -2,6 +2,7 @@
 
 #include "ByteIO.h"
 #include "DocumentStore.h"
+#include "ListIdGaps.h"
 
 #include <algorithm>
 #include <climits>
@@ -37,18 +38,10 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
     list.frequencies.reserve(count);
     std::size_t position_count = 0;
 
-    const std::uint64_t id_limit = store.id_limit();
-    std::uint64_t doc_id = 0;
+    AscendingIds ids(store.id_limit(), "posting doc ids are not ascending", "posting refers to a missing document");
     for (std::size_t i = 0; i < count; i++) {
-        const std::uint64_t gap = reader.varint();
-        if (i > 0 && gap == 0) {
-            fail_format("posting doc ids are not ascending");
-        }
-        if (gap >= id_limit) {
-            fail_format("posting refers to a missing document");
-        }
-        doc_id += gap;
-        if (doc_id >= id_limit || !store.contains(static_cast<int>(doc_id))) {
+        const std::uint64_t doc_id = ids.next(reader);
+        if (!store.contains(static_cast<int>(doc_id))) {
             fail_format("posting refers to a missing document");
         }
 
@@ -92,14 +85,6 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
     }
     list.positions.offsets.shrink_to_fit();
     list.positions.positions.shrink_to_fit();
-}
-
-std::size_t varint_size(std::uint32_t value) {
-    std::size_t size = 1;
-    for (; value >= 0x80; value >>= 7) {
-        size++;
-    }
-    return size;
 }
 
 }
@@ -205,7 +190,7 @@ InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store
     std::vector<ListId> last_list(id_limit);
     for (ListId list = 0; list < list_count; list++) {
         for (const std::uint32_t doc : result.lists.postings(list).doc_ids()) {
-            encoded_size[doc] += static_cast<std::uint32_t>(varint_size(list - last_list[doc]));
+            encoded_size[doc] += static_cast<std::uint32_t>(list_gap_size(list - last_list[doc]));
             last_list[doc] = list;
         }
     }
@@ -220,13 +205,9 @@ InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store
     std::ranges::fill(last_list, 0);
     for (ListId list = 0; list < list_count; list++) {
         for (const std::uint32_t doc : result.lists.postings(list).doc_ids()) {
-            char* out = result.doc_lists[doc]->data() + encoded_size[doc];
-            std::uint32_t gap = list - last_list[doc];
-            for (; gap >= 0x80; gap >>= 7) {
-                *out++ = static_cast<char>(gap | 0x80);
-            }
-            *out++ = static_cast<char>(gap);
-            encoded_size[doc] = static_cast<std::uint32_t>(out - result.doc_lists[doc]->data());
+            char* const start = result.doc_lists[doc]->data();
+            encoded_size[doc] = static_cast<std::uint32_t>(
+                write_list_gap(start + encoded_size[doc], list - last_list[doc]) - start);
             last_list[doc] = list;
         }
     }

@@ -101,17 +101,10 @@ DocumentKeys DocumentKeys::read(ByteReader& reader, const DocumentStore& store) 
     DocumentKeys result;
     const std::size_t count = reader.count("key count", 2);
     result.reserve(count);
-    std::uint64_t id = 0;
+    AscendingIds ids(store.id_limit(), "key ids are not ascending", "key is bound to a missing document");
     for (std::size_t i = 0; i < count; i++) {
-        const std::uint64_t gap = reader.varint();
-        if (i > 0 && gap == 0) {
-            fail_format("key ids are not ascending");
-        }
-        if (gap >= store.id_limit()) {
-            fail_format("key is bound to a missing document");
-        }
-        id += gap;
-        if (id >= store.id_limit() || !store.contains(static_cast<int>(id))) {
+        const std::uint64_t id = ids.next(reader);
+        if (!store.contains(static_cast<int>(id))) {
             fail_format("key is bound to a missing document");
         }
         const std::string key(reader.string("key length"));
