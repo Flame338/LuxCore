@@ -190,7 +190,7 @@ Results are collected with a bounded priority queue that keeps the best `top_k` 
 
 ### Query parser
 
-`QueryParser(analyzer).parse(text)` returns a `ParseResult` with either `query` or `error` (`message` and byte `offset`). It does not throw.
+`QueryParser(analyzer).parse(text)` returns a `ParseResult` with either `query` or `error` (`message` and byte `offset`). It does not throw. `QueryParser(analyzer, {.phrases = false})` also rejects any phrase, including one inside an excluded clause, at the byte offset of the first one. A syntax error anywhere in the text is reported first.
 
 - `a b` and `a OR b` are OR. `a AND b` is AND, and AND binds tighter than OR, so `a OR b AND c` is `a OR (b AND c)`.
 - `+a` is MUST, `-a` and `NOT a` are MUST_NOT, and parentheses group.
@@ -203,7 +203,7 @@ The field index keeps the positions of every term occurrence next to its posting
 
 `Indexer` keeps positions unless `IndexOptions{.positions = false}` turns them off. Without positions each posting list holds no offsets and no position pool, so `PhraseQuery` matches nothing on such an index. `Indexer::deserialize(bytes, stop_words_path, options)` takes the same options. The file format is unchanged, because a posting already says whether it carries positions.
 
-The public `luxcore::Index` indexes without positions by default, because plain search and `search` never need them. `Index(IndexConfig{.positions = true})` keeps them, and then `search_query` and `snippet_query` accept phrases. Positions cost memory. On the 100k document bench corpus they take 19 MB next to 38 MB of postings. Without positions, `search_query` and `snippet_query` throw `QueryError` for any query that holds a phrase, instead of returning nothing.
+The public `luxcore::Index` indexes without positions by default, because plain search and `search` never need them. `Index(IndexConfig{.positions = true})` keeps them, and then `search_query` and `snippet_query` accept phrases. Positions cost memory. On the 100k document bench corpus they take 19 MB next to 38 MB of postings. Without positions, `search_query` and `snippet_query` throw `QueryError` for any query that holds a phrase, instead of returning nothing, and its `offset()` points at the first phrase.
 
 An index saved with positions holds them in the file. `Index::load(path)` drops them, and `Index::load(path, IndexConfig{.positions = true})` keeps them. A file that an index without positions saved has none to keep, so phrase queries on it match nothing even when `load` is given `positions = true`. Build the index with `positions = true` before you save it.
 

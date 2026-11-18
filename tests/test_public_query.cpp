@@ -177,6 +177,23 @@ TEST(public_query_reports_a_syntax_error_before_a_phrase_that_needs_positions) {
     CHECK(failure.message.find("parenthesis") != std::string::npos);
 }
 
+TEST(public_query_points_at_the_phrase_that_needs_positions) {
+    const luxcore::Index index = phrases(false);
+
+    CHECK_EQ(query_failure([&] { index.search_query("quick \"lazy dog\""); }).offset, static_cast<std::size_t>(6));
+    CHECK_EQ(query_failure([&] { index.search_query("fox wi-fi"); }).offset, static_cast<std::size_t>(4));
+    CHECK_EQ(query_failure([&] { index.snippet_query("fox", "body", "quick \"lazy dog\""); }).offset,
+             static_cast<std::size_t>(6));
+}
+
+TEST(public_query_rejects_an_excluded_phrase_without_positions) {
+    const luxcore::Index index = phrases(false);
+
+    const QueryFailure failure = query_failure([&] { index.search_query("quick -\"lazy dog\""); });
+    CHECK(failure.thrown);
+    CHECK_EQ(failure.offset, static_cast<std::size_t>(7));
+}
+
 TEST(public_query_hyphenated_words_are_phrases_when_positions_are_on) {
     luxcore::Index index(luxcore::IndexConfig{.positions = true});
     index.add("net", "Network", "connect to the wi-fi router");

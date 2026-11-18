@@ -60,19 +60,9 @@ struct Index::Impl {
     }
 
     std::unique_ptr<Query> parse(const std::string& text) const {
-        ParseResult parsed = QueryParser(indexer.get_analyzer()).parse(text);
+        ParseResult parsed = QueryParser(indexer.get_analyzer(), {.phrases = positions}).parse(text);
         if (!parsed.ok()) {
             throw QueryError(parsed.error->message, parsed.error->offset);
-        }
-        if (!positions) {
-            QueryLeaves leaves;
-            parsed.query->add_leaves(leaves);
-            if (!leaves.phrases.empty()) {
-                throw QueryError(
-                    "phrase queries need an index built with IndexConfig{.positions = true}, and words joined by "
-                    "a hyphen or similar punctuation count as phrases",
-                    0);
-            }
         }
         return std::move(parsed.query);
     }

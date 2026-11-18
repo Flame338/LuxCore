@@ -635,7 +635,7 @@ static void search_query_offset_is_zero_unless_the_query_is_invalid(void) {
 
     offset = 99;
     CHECK_STATUS(lux_index_search_query(plain, STR("fox \"quick brown\""), 10, &hits, &offset), LUX_INVALID_QUERY);
-    CHECK(offset == 0);
+    CHECK(offset == 4);
 
     lux_index_free(plain);
     lux_index_free(index);
