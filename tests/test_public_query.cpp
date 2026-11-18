@@ -246,6 +246,34 @@ TEST(public_snippet_is_empty_for_an_unknown_key_or_field) {
     CHECK(!index.snippet_query("reading", "author", "lucene").has_value());
 }
 
+TEST(public_snippet_query_reports_a_bad_query_before_a_missing_key) {
+    const luxcore::Index index = reading();
+
+    const QueryFailure failure = query_failure([&] { index.snippet_query("missing", "body", "(quick"); });
+    CHECK(failure.thrown);
+}
+
+TEST(public_snippet_text_query_scopes_the_text_as_a_body) {
+    const luxcore::Index index = reading();
+
+    CHECK_EQ(index.snippet_text_query("a book list", "title:book list"), "a book <em>list</em>");
+    CHECK_EQ(index.snippet_text_query("a book list", "body:book"), "a <em>book</em> list");
+}
+
+TEST(public_snippet_keeps_the_completions_search_scored_across_all_fields) {
+    luxcore::Index index;
+    for (int i = 0; i < 5; i++) {
+        index.add("t" + std::to_string(i), "quartz quiet quilt quota", "filler");
+    }
+    index.add("x", "Other", "quince");
+
+    CHECK_EQ(index.snippet("t0", "title", "qu").value_or("-"),
+             "<em>quartz</em> <em>quiet</em> <em>quilt</em> <em>quota</em>");
+    CHECK_EQ(index.snippet("x", "body", "qu").value_or("-"), "quince");
+    CHECK_EQ(index.snippet_text("quince", "qu"), "quince");
+    CHECK_EQ(index.snippet("x", "body", "quin").value_or("-"), "<em>quince</em>");
+}
+
 TEST(public_snippet_uses_custom_markers) {
     const luxcore::Index index = reading();
     luxcore::SnippetOptions options;

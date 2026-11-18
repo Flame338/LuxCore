@@ -162,7 +162,6 @@ std::vector<Token> IdentifierTokenizer::tokenize_tokens(std::string_view text) c
 
 Analyzer make_identifier_analyzer(IdentifierOptions options) {
     Analyzer analyzer(std::make_unique<IdentifierTokenizer>(options));
-    analyzer.add_filter(std::make_unique<LowercaseFilter>());
     analyzer.add_filter(std::make_unique<UnicodeFoldingFilter>());
     return analyzer;
 }

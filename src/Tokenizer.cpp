@@ -3,8 +3,6 @@
 #include "CodePointRanges.h"
 #include "Utf8.h"
 
-#include <cctype>
-
 namespace {
 
 enum class CharClass { word, separator, standalone };
@@ -46,7 +44,9 @@ static_assert(code_point_ranges::is_well_formed(class_ranges));
 
 CharClass classify(char32_t code_point) {
     if (code_point < 0x80) {
-        return std::isalnum(static_cast<int>(code_point)) ? CharClass::word : CharClass::separator;
+        const bool alnum = (code_point >= U'0' && code_point <= U'9') || (code_point >= U'a' && code_point <= U'z') ||
+                           (code_point >= U'A' && code_point <= U'Z');
+        return alnum ? CharClass::word : CharClass::separator;
     }
     const ClassRange* range = code_point_ranges::find(class_ranges, code_point);
     return range ? range->kind : CharClass::word;

@@ -15,11 +15,6 @@ public:
     virtual bool applies_to_partial_words() const { return true; }
 };
 
-class LowercaseFilter : public TokenFilter {
-public:
-    void filter(std::vector<Token>& tokens) const override;
-};
-
 class UnicodeFoldingFilter : public TokenFilter {
 public:
     void filter(std::vector<Token>& tokens) const override;
