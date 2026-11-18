@@ -650,6 +650,46 @@ TEST(loading_an_empty_or_garbage_file_throws) {
     CHECK(rejected(failure_of([&] { luxcore::Index::load(file.str()); })));
 }
 
+std::vector<std::filesystem::path> leftovers_of(const std::filesystem::path& target) {
+    std::vector<std::filesystem::path> found;
+    const std::string prefix = target.filename().string() + ".";
+    for (const auto& entry : std::filesystem::directory_iterator(target.parent_path())) {
+        const std::string name = entry.path().filename().string();
+        if (name.starts_with(prefix) && name.ends_with(".tmp")) {
+            found.push_back(entry.path());
+        }
+    }
+    return found;
+}
+
+TEST(saving_over_an_existing_index_replaces_it_and_leaves_no_temporary_file) {
+    const TempFile file("replace");
+    luxcore::Index first;
+    first.add("old", "Old", "only the first save has this");
+    first.save(file.str());
+
+    api_corpus().save(file.str());
+
+    const luxcore::Index loaded = luxcore::Index::load(file.str());
+    CHECK_EQ(api_results(loaded), api_results(api_corpus()));
+    CHECK(!loaded.stored("old", "title").has_value());
+    CHECK(leftovers_of(file.path).empty());
+}
+
+TEST(a_save_that_cannot_replace_its_target_keeps_the_target_and_leaves_no_temporary_file) {
+    const TempFile file("target_is_directory");
+    std::filesystem::create_directory(file.path);
+    std::ofstream(file.path / "inside.txt") << "kept";
+
+    const std::string failure = failure_of([&] { api_corpus().save(file.str()); });
+
+    CHECK(rejected(failure));
+    CHECK(mentions(failure, file.str().c_str()));
+    CHECK_EQ(read_all((file.path / "inside.txt").string()), std::string("kept"));
+    CHECK(leftovers_of(file.path).empty());
+    std::filesystem::remove_all(file.path);
+}
+
 TEST(saving_to_an_unwritable_path_throws) {
     const TempFile file("no_directory");
     const std::string path = (file.path.parent_path() / "luxcore_no_such_directory" / "index.lux").string();

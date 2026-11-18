@@ -105,7 +105,7 @@ A loaded index gives the same results as the one you saved, and you can keep add
 - `load` drops phrase positions. Pass `IndexConfig{.positions = true}` to keep them. A file saved without positions then throws `luxcore::PositionsError`, so phrase queries never miss part of the index.
 - A damaged or truncated file throws `FormatError`. It never crashes the program.
 - A file only loads in the library version that wrote it. Rebuild the index after an upgrade.
-- `save` writes straight to the path. To be safe from a crash during a save, write to a temporary name and rename it.
+- `save` writes a temporary file next to the path and renames it over the path at the end. A failed or interrupted save leaves the previous file as it was.
 
 ## Threads
 

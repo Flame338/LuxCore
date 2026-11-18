@@ -5,7 +5,7 @@
 
 #include <algorithm>
 #include <fstream>
-#include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -317,10 +317,9 @@ StopWordFilter::StopWordFilter(const std::string& stop_words_path) {
         return;
     }
 
-    std::ifstream file(stop_words_path);
+    std::ifstream file(utf8::path(stop_words_path));
     if (!file.is_open()) {
-        std::cerr << "Warning: Could not open stop word file: " << stop_words_path << '\n';
-        return;
+        throw std::runtime_error("cannot open stop word file: " + stop_words_path);
     }
 
     std::string word;
