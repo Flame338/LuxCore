@@ -36,6 +36,20 @@ std::string snapshot(const Indexer& indexer, int id_limit) {
     return text;
 }
 
+std::string live_documents(const Indexer& indexer, int id_limit) {
+    std::string text;
+    for (int id = 0; id < id_limit; id++) {
+        if (indexer.contains(id)) {
+            text += indexer.get_key(id);
+            for (const Field& field : indexer.get_document(id).get_fields()) {
+                text += "|" + field.name + "=" + field.value;
+            }
+            text += "\n";
+        }
+    }
+    return text;
+}
+
 }
 
 TEST(document_keys_agree_with_a_map_through_bind_unbind_and_growth) {
@@ -123,9 +137,11 @@ TEST(document_store_keeps_every_survivor_intact_across_compaction) {
     }
     CHECK_EQ(indexer.get_index().get_total_documents(), 60);
 
-    const std::string before = snapshot(indexer, 300);
+    const std::string before = live_documents(indexer, 300);
     const Indexer reloaded = Indexer::deserialize(indexer.serialize());
-    CHECK_EQ(snapshot(reloaded, 300), before);
+    CHECK_EQ(live_documents(reloaded, 300), before);
+    CHECK(reloaded.contains(59));
+    CHECK(!reloaded.contains(60));
 }
 
 TEST(document_store_value_of_finds_the_first_field_with_a_name) {

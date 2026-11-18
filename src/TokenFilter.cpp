@@ -331,6 +331,17 @@ StopWordFilter::StopWordFilter(const std::string& stop_words_path) {
     }
 }
 
+std::string StopWordFilter::settings() const {
+    std::vector<std::string_view> sorted(stop_words.begin(), stop_words.end());
+    std::ranges::sort(sorted);
+    std::string joined;
+    for (const std::string_view word : sorted) {
+        joined.append(word);
+        joined.push_back('\n');
+    }
+    return joined;
+}
+
 void StopWordFilter::filter(std::vector<Token>& tokens) const {
     std::erase_if(tokens, [this](const Token& token) { return stop_words.contains(token.term); });
 }

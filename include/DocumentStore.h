@@ -15,6 +15,23 @@
 class ByteWriter;
 class ByteReader;
 
+class DocumentStore;
+
+class FileIds {
+private:
+    std::vector<std::uint32_t> dense;
+
+    friend class DocumentStore;
+
+public:
+    static constexpr std::uint32_t missing = UINT32_MAX;
+
+    static FileIds of(const DocumentStore& store);
+
+    std::uint64_t limit() const { return dense.size(); }
+    std::uint32_t operator[](std::uint64_t file_id) const { return dense[static_cast<std::size_t>(file_id)]; }
+};
+
 class DocumentStore {
 private:
     static constexpr std::uint32_t absent = UINT32_MAX;
@@ -61,5 +78,5 @@ public:
 
     void memory_stats(MemoryStats& out) const;
     void write(ByteWriter& writer) const;
-    static DocumentStore read(ByteReader& reader);
+    static DocumentStore read(ByteReader& reader, FileIds& ids);
 };

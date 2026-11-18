@@ -12,8 +12,10 @@
 namespace {
 
 constexpr std::uint32_t format_magic = 0x4358554C;
-constexpr std::uint32_t format_version = 1;
-constexpr std::size_t header_size = 16;
+constexpr std::uint32_t format_version = 2;
+constexpr std::uint32_t unchecked_format_version = 1;
+constexpr std::size_t header_size = 24;
+constexpr std::size_t unchecked_header_size = 16;
 
 Positions positions_of(IndexOptions options) {
     return options.positions ? Positions::On : Positions::Off;
@@ -143,6 +145,7 @@ void Indexer::serialize(ByteSink& sink) const {
     writer.u32(format_magic);
     writer.u32(format_version);
     writer.u64(0);
+    writer.u64(analyzer.fingerprint());
     doc_store.write(writer);
     doc_keys.write(writer);
     inverted_index.write(writer);
@@ -168,23 +171,29 @@ Indexer Indexer::deserialize(std::string_view data, const std::string& stop_word
         fail_format("bad magic number, this is not a LuxCore index");
     }
     const std::uint32_t version = reader.u32();
-    if (version != format_version) {
-        fail_format("unsupported format version " + std::to_string(version) + ", this build reads version " +
-                    std::to_string(format_version));
+    if (version != format_version && version != unchecked_format_version) {
+        fail_format("unsupported format version " + std::to_string(version) + ", this build reads versions " +
+                    std::to_string(unchecked_format_version) + " and " + std::to_string(format_version));
     }
-    if (data.size() < header_size) {
+    if (data.size() < (version == format_version ? header_size : unchecked_header_size)) {
         fail_format("file is truncated inside the header");
     }
     const std::uint64_t body_size = reader.u64();
+    Indexer indexer(stop_words_path, options);
+    if (version == format_version && reader.u64() != indexer.analyzer.fingerprint()) {
+        fail_format("the index was built with a different analyzer, from another stop word file or a library "
+                    "version that tokenizes or folds text differently. Rebuild it from the source documents");
+    }
     if (body_size != reader.remaining()) {
         fail_format("file is truncated or has trailing bytes, the header declares " + std::to_string(body_size) +
                     " bytes of content and the file holds " + std::to_string(reader.remaining()));
     }
 
-    Indexer indexer(stop_words_path, options);
-    indexer.doc_store = DocumentStore::read(reader);
-    indexer.doc_keys = DocumentKeys::read(reader, indexer.doc_store);
-    indexer.inverted_index = InvertedIndex::read(reader, indexer.doc_store, positions_of(options));
+    FileIds ids;
+    indexer.doc_store = DocumentStore::read(reader, ids);
+    indexer.doc_keys = DocumentKeys::read(reader, ids);
+    indexer.inverted_index =
+        InvertedIndex::read(reader, ids, indexer.doc_store.size(), positions_of(options));
     if (!reader.at_end()) {
         fail_format("unexpected bytes after the index");
     }

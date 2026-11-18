@@ -25,7 +25,7 @@ struct ReadList {
     PositionList positions;
 };
 
-void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& tallies, bool positions,
+void read_posting_list(ByteReader& reader, const FileIds& ids, Tallies& tallies, bool positions,
                        std::string_view term, ReadList& list) {
     const std::size_t count = reader.count("posting count", 2);
     if (count == 0) {
@@ -38,10 +38,11 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
     list.frequencies.reserve(count);
     std::size_t position_count = 0;
 
-    AscendingIds ids(store.id_limit(), "posting doc ids are not ascending", "posting refers to a missing document");
+    AscendingIds file_ids(ids.limit(), "posting doc ids are not ascending", "posting refers to a missing document");
     for (std::size_t i = 0; i < count; i++) {
-        const std::uint64_t doc_id = ids.next(reader);
-        if (!store.contains(static_cast<int>(doc_id))) {
+        const std::uint64_t file_id = file_ids.next(reader);
+        const std::uint32_t doc_id = ids[file_id];
+        if (doc_id == FileIds::missing) {
             fail_format("posting refers to a missing document");
         }
 
@@ -74,11 +75,11 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
                 }
             }
         } else if (positions) {
-            throw MissingPositions("document " + std::to_string(doc_id) +
+            throw MissingPositions("document " + std::to_string(file_id) +
                                    " was saved without positions for the term \"" + std::string(term) + "\"");
         }
 
-        list.docs.push_back(static_cast<std::uint32_t>(doc_id));
+        list.docs.push_back(doc_id);
         list.frequencies.push_back(static_cast<std::uint32_t>(frequency));
         tallies.lengths[static_cast<std::size_t>(doc_id)] += static_cast<long long>(frequency);
         tallies.term_counts[static_cast<std::size_t>(doc_id)]++;
@@ -124,9 +125,9 @@ void InvertedIndex::write(ByteWriter& writer) const {
     }
 }
 
-InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store, Positions positions) {
+InvertedIndex InvertedIndex::read(ByteReader& reader, const FileIds& ids, std::size_t documents, Positions positions) {
     InvertedIndex result(positions);
-    const std::size_t id_limit = store.id_limit();
+    const std::size_t id_limit = documents;
     Tallies tallies{std::vector<long long>(id_limit), std::vector<int>(id_limit)};
     ReadList read;
 
@@ -152,7 +153,7 @@ InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store
                 fail_format("terms are not in ascending order");
             }
             previous = term;
-            read_posting_list(reader, store, tallies, result.positioned(), term, read);
+            read_posting_list(reader, ids, tallies, result.positioned(), term, read);
 
             const TermId id = result.terms.intern(term);
             const ListId list = result.list_for(id, field_number);
@@ -196,11 +197,9 @@ InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store
     }
     result.doc_lists.resize(id_limit);
     for (std::size_t doc = 0; doc < id_limit; doc++) {
-        if (store.contains(static_cast<int>(doc))) {
-            result.doc_lists[doc].emplace(encoded_size[doc], '\0');
-            result.total_documents++;
-        }
+        result.doc_lists[doc].emplace(encoded_size[doc], '\0');
     }
+    result.total_documents = static_cast<int>(documents);
     std::ranges::fill(encoded_size, 0);
     std::ranges::fill(last_list, 0);
     for (ListId list = 0; list < list_count; list++) {

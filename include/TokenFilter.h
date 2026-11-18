@@ -13,6 +13,7 @@ public:
     virtual void filter(std::vector<Token>& tokens) const = 0;
     void apply(std::vector<std::string>& terms) const;
     virtual bool applies_to_partial_words() const { return true; }
+    virtual std::string settings() const { return {}; }
 };
 
 class UnicodeFoldingFilter : public TokenFilter {
@@ -39,4 +40,5 @@ public:
 
     void filter(std::vector<Token>& tokens) const override;
     bool applies_to_partial_words() const override { return false; }
+    std::string settings() const override;
 };

@@ -30,28 +30,48 @@ std::string number(double value) {
     return buffer;
 }
 
-std::string hits_text(const std::vector<SearchHit>& hits) {
+using Ranks = std::vector<int>;
+
+Ranks ranks_of(const Indexer& indexer, int ids) {
+    Ranks ranks(static_cast<std::size_t>(ids), -1);
+    int next = 0;
+    for (int id = 0; id < ids; id++) {
+        if (indexer.contains(id)) {
+            ranks[static_cast<std::size_t>(id)] = next++;
+        }
+    }
+    return ranks;
+}
+
+std::string rank(const Ranks& ranks, int id) {
+    return std::to_string(ranks[static_cast<std::size_t>(id)]);
+}
+
+std::string hits_text(const std::vector<SearchHit>& hits, const Ranks& ranks) {
     std::string text;
     for (const SearchHit& hit : hits) {
-        text += "[" + std::to_string(hit.doc_id) + "," + hit.key + "," + number(hit.score) + "]";
+        text += "[" + rank(ranks, hit.doc_id) + "," + hit.key + "," + number(hit.score) + "]";
     }
     return text;
 }
 
-std::string describe_index(const InvertedIndex& index, int ids) {
+std::string describe_index(const InvertedIndex& index, const Ranks& ranks) {
+    const int ids = static_cast<int>(ranks.size());
     std::string text = "docs=" + std::to_string(index.get_total_documents()) +
                        " terms=" + std::to_string(index.get_unique_terms_count()) + "\n";
     for (const std::string_view field : index.field_names()) {
         text += "field " + std::string(field) + " docs=" + std::to_string(index.get_field_documents(field)) +
                 " average=" + number(index.get_average_field_length(field)) + "\n lengths";
         for (int id = 0; id < ids; id++) {
-            text += " " + std::to_string(index.get_field_length(field, id));
+            if (ranks[static_cast<std::size_t>(id)] >= 0) {
+                text += " " + std::to_string(index.get_field_length(field, id));
+            }
         }
         for (const TermPostings& match : index.terms_with_prefix(field, "")) {
             const std::optional<PostingList> list = index.get_posting_list(field, match.term);
             text += "\n " + std::string(match.term) + ":";
             for (std::size_t i = 0; i < list->postings.size(); i++) {
-                text += "(" + std::to_string(list->postings[i].doc_id) + "x" +
+                text += "(" + rank(ranks, list->postings[i].doc_id) + "x" +
                         std::to_string(list->postings[i].term_frequency) + "@";
                 for (const std::uint32_t position : list->positions_of(i)) {
                     text += std::to_string(position) + ",";
@@ -65,7 +85,7 @@ std::string describe_index(const InvertedIndex& index, int ids) {
     for (const TermPostings& match : index.terms_with_prefix("")) {
         text += " " + std::string(match.term) + " df=" + std::to_string(match.document_frequency) + ":";
         for (const Posting& posting : combined_postings(index, std::string(match.term))) {
-            text += "(" + std::to_string(posting.doc_id) + "x" + std::to_string(posting.term_frequency) + ")";
+            text += "(" + rank(ranks, posting.doc_id) + "x" + std::to_string(posting.term_frequency) + ")";
         }
         text += "\n";
     }
@@ -80,20 +100,21 @@ std::string describe_index(const InvertedIndex& index, int ids) {
 }
 
 std::string describe(const Indexer& indexer, int ids) {
-    std::string text = describe_index(indexer.get_index(), ids);
+    const Ranks ranks = ranks_of(indexer, ids);
+    std::string text = describe_index(indexer.get_index(), ranks);
     for (int id = 0; id < ids; id++) {
-        text += "doc " + std::to_string(id) + (indexer.contains(id) ? " live key=" : " gone key=") +
-                indexer.get_key(id);
+        if (!indexer.contains(id)) {
+            continue;
+        }
         const std::string& key = indexer.get_key(id);
+        text += "doc " + rank(ranks, id) + " key=" + key;
         if (!key.empty()) {
             const std::optional<int> found = indexer.find_id(key);
-            text += " found=" + (found ? std::to_string(*found) : std::string("-"));
+            text += " found=" + (found ? rank(ranks, *found) : std::string("-"));
         }
-        if (indexer.contains(id)) {
-            for (const Field& field : indexer.get_document(id).get_fields()) {
-                text += " {" + field.name + "=" + field.value + "|" + std::to_string(field.options.stored) +
-                        std::to_string(field.options.indexed) + std::to_string(field.options.analyzed) + "}";
-            }
+        for (const Field& field : indexer.get_document(id).get_fields()) {
+            text += " {" + field.name + "=" + field.value + "|" + std::to_string(field.options.stored) +
+                    std::to_string(field.options.indexed) + std::to_string(field.options.analyzed) + "}";
         }
         text += "\n";
     }
@@ -106,41 +127,42 @@ const char* const queries[] = {"rocket",   "rock",       "rcket launch", "cafe",
                                "launc",    "zzzz",       "swap",         "late",   "the",
                                "garden notes", "snake case", "http server"};
 
-std::string run_query(const Indexer& indexer, const Query& query) {
+std::string run_query(const Indexer& indexer, const Query& query, const Ranks& ranks) {
     const Searcher searcher(indexer, {.scoring = Scoring::bm25_with()});
-    std::string text = hits_text(searcher.search(query, 10)) + " ids=";
+    std::string text = hits_text(searcher.search(query, 10), ranks) + " ids=";
     for (const int id : searcher.matching_ids(query)) {
-        text += std::to_string(id) + ",";
+        text += rank(ranks, id) + ",";
     }
     return text;
 }
 
 std::string results_of(const Indexer& indexer) {
+    const Ranks ranks = ranks_of(indexer, 4096);
     std::string text;
     for (const Scoring& scoring : {Scoring::tf_idf(), Scoring::bm25_with()}) {
         for (const Fuzziness fuzziness : {Fuzziness::Off, Fuzziness::On}) {
             const Searcher searcher(indexer, {.scoring = scoring, .fuzziness = fuzziness});
             for (const char* query : queries) {
-                text += std::string(query) + " => " + hits_text(searcher.search(query, 10)) + " | ";
+                text += std::string(query) + " => " + hits_text(searcher.search(query, 10), ranks) + " | ";
                 for (const Suggestion& suggestion : searcher.suggest(query, 5)) {
                     text += suggestion.term + "#" + std::to_string(suggestion.doc_freq) + ",";
                 }
-                text += " | " + hits_text(searcher.search_in("title", query, 10)) + "\n";
+                text += " | " + hits_text(searcher.search_in("title", query, 10), ranks) + "\n";
             }
         }
     }
 
-    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"rocket", "launch"})) + "\n";
-    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"rocket", "launch"}, "body")) + "\n";
-    text += run_query(indexer, PhraseQuery(std::vector<PhraseTerm>{{"rocket", 0}, {"pad", 2}})) + "\n";
-    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"fox", "den"}, "body")) + "\n";
-    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"den", "fox"}, "body")) + "\n";
-    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"red", "fox"}, "body")) + "\n";
+    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"rocket", "launch"}), ranks) + "\n";
+    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"rocket", "launch"}, "body"), ranks) + "\n";
+    text += run_query(indexer, PhraseQuery(std::vector<PhraseTerm>{{"rocket", 0}, {"pad", 2}}), ranks) + "\n";
+    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"fox", "den"}, "body"), ranks) + "\n";
+    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"den", "fox"}, "body"), ranks) + "\n";
+    text += run_query(indexer, PhraseQuery(std::vector<std::string>{"red", "fox"}, "body"), ranks) + "\n";
     const QueryParser parser(indexer.get_analyzer());
     for (const char* parsed : {"\"fox den\"", "\"rocket launch\" OR cafe", "+rocket -pad", "title:garden body:(fox OR den)",
                                "\"snake case name\"", "tag:Urgent"}) {
         const ParseResult result = parser.parse(parsed);
-        text += std::string(parsed) + " => " + (result.ok() ? run_query(indexer, *result.query) : "error") + "\n";
+        text += std::string(parsed) + " => " + (result.ok() ? run_query(indexer, *result.query, ranks) : "error") + "\n";
     }
     return text;
 }
@@ -231,8 +253,10 @@ std::string with_body_length(std::string bytes, std::uint64_t length) {
 
 std::string framed(const std::string& body) {
     ByteWriter header;
-    header.append(Indexer().serialize().substr(0, 8));
+    const std::string empty = Indexer().serialize();
+    header.append(empty.substr(0, 8));
     header.u64(body.size());
+    header.append(empty.substr(16, 8));
     header.append(body);
     return header.take();
 }
@@ -343,8 +367,7 @@ TEST(round_trip_keeps_every_observable_result) {
     const Indexer loaded = Indexer::deserialize(original.serialize(), "stopwords.txt");
 
     const std::string expected = describe(original, corpus_ids);
-    CHECK(mentions(expected, "doc 0 live key=rocket"));
-    CHECK(mentions(expected, "gone key="));
+    CHECK(mentions(expected, "doc 0 key=rocket"));
     CHECK(mentions(expected, "|111}"));
     CHECK_EQ(describe(loaded, corpus_ids), expected);
 
@@ -352,6 +375,73 @@ TEST(round_trip_keeps_every_observable_result) {
     CHECK(mentions(results, "rocket => [0,rocket,"));
     CHECK(mentions(results, "[1,many,"));
     CHECK_EQ(results_of(loaded), results);
+}
+
+TEST(a_file_only_loads_with_the_analyzer_that_built_it) {
+    const std::string with_stop_words = varied_corpus().serialize();
+
+    const std::string failure = failure_of([&] { Indexer::deserialize(with_stop_words); });
+    CHECK(mentions(failure, "different analyzer"));
+    CHECK(rejected(failure_of([&] { Indexer::deserialize(small_corpus().serialize(), "stopwords.txt"); })));
+    CHECK_EQ(failure_of([&] { Indexer::deserialize(with_stop_words, "stopwords.txt"); }), std::string("<no error>"));
+}
+
+TEST(the_analyzer_fingerprint_follows_the_stop_words_and_nothing_else) {
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "luxcore_fingerprint_stop_words.txt";
+    std::ofstream(path) << "the\nand\n";
+    const std::uint64_t two_words = make_standard_analyzer(path.string()).fingerprint();
+    std::ofstream(path) << "and\n\nthe\nTHE\n";
+    const std::uint64_t same_words_reordered = make_standard_analyzer(path.string()).fingerprint();
+    std::ofstream(path) << "the\nand\nof\n";
+    const std::uint64_t three_words = make_standard_analyzer(path.string()).fingerprint();
+    std::filesystem::remove(path);
+
+    CHECK_EQ(make_standard_analyzer().fingerprint(), make_standard_analyzer().fingerprint());
+    CHECK_EQ(same_words_reordered, two_words);
+    CHECK(three_words != two_words);
+    CHECK(two_words != make_standard_analyzer().fingerprint());
+}
+
+TEST(a_damaged_fingerprint_is_rejected_by_the_public_index) {
+    const TempFile file("fingerprint");
+    api_corpus().save(file.str());
+    std::string bytes = read_all(file.str());
+    bytes[20] = static_cast<char>(bytes[20] ^ 1);
+    write_all(file.str(), bytes);
+
+    std::string message;
+    try {
+        luxcore::Index::load(file.str());
+    } catch (const luxcore::FormatError& error) {
+        message = error.what();
+    }
+    CHECK(mentions(message, "different analyzer"));
+}
+
+TEST(loading_renumbers_the_documents_without_gaps_in_their_order) {
+    const Indexer original = varied_corpus();
+    int highest = 0;
+    for (int id = 0; id < corpus_ids; id++) {
+        highest = original.contains(id) ? id : highest;
+    }
+    const int live = original.get_index().get_total_documents();
+    CHECK(highest + 1 > live);
+
+    Indexer loaded = Indexer::deserialize(original.serialize(), "stopwords.txt");
+
+    for (int id = 0; id < live; id++) {
+        CHECK(loaded.contains(id));
+    }
+    CHECK(!loaded.contains(live));
+    CHECK_EQ(*loaded.find_id("late"), live - 1);
+    CHECK_EQ(loaded.add_document("next", make_text_document("Next", "after the load")), live);
+}
+
+TEST(loading_twice_gives_the_same_ids_and_the_same_bytes) {
+    const Indexer loaded = Indexer::deserialize(varied_corpus().serialize(), "stopwords.txt");
+    const std::string bytes = loaded.serialize();
+
+    CHECK_EQ(Indexer::deserialize(bytes, "stopwords.txt").serialize(), bytes);
 }
 
 InvertedIndex positioned_index() {
@@ -385,7 +475,7 @@ TEST(reading_without_positions_keeps_frequencies_and_drops_every_position) {
     ByteWriter writer;
     positioned_index().write(writer);
     ByteReader reader(writer.bytes());
-    const InvertedIndex loaded = InvertedIndex::read(reader, store, Positions::Off);
+    const InvertedIndex loaded = InvertedIndex::read(reader, FileIds::of(store), store.size(), Positions::Off);
 
     CHECK(reader.at_end());
     CHECK_EQ(loaded.get_total_documents(), 4);
@@ -404,7 +494,7 @@ TEST(reading_with_positions_rejects_a_posting_saved_without_them) {
 
     std::string message;
     try {
-        InvertedIndex::read(reader, store, Positions::On);
+        InvertedIndex::read(reader, FileIds::of(store), store.size(), Positions::On);
     } catch (const MissingPositions& missing) {
         message = missing.what();
     }
