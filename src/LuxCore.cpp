@@ -49,18 +49,18 @@ enum class Syntax { Plain, Query };
 
 struct Index::Impl {
     Indexer indexer;
-    bool positions;
     mutable FairSharedMutex mutex;
 
     explicit Impl(IndexConfig config)
-        : indexer(std::string(), IndexOptions{.positions = config.positions}), positions(config.positions) {}
+        : indexer(std::string(), IndexOptions{.positions = config.positions}) {}
 
     Searcher searcher() const {
         return Searcher(indexer, {.scoring = Scoring::bm25_with(), .fuzziness = Fuzziness::On});
     }
 
     std::unique_ptr<Query> parse(const std::string& text) const {
-        ParseResult parsed = QueryParser(indexer.get_analyzer(), {.phrases = positions}).parse(text);
+        const QueryParser parser(indexer.get_analyzer(), {.phrases = indexer.get_options().positions});
+        ParseResult parsed = parser.parse(text);
         if (!parsed.ok()) {
             throw QueryError(parsed.error->message, parsed.error->offset);
         }
