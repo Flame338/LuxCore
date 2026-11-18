@@ -258,6 +258,7 @@ void append_folded(std::string& out, std::string_view original, char32_t code_po
 
 void fold(std::string& token) {
     if (is_ascii(token)) {
+        to_lower(token);
         return;
     }
 
@@ -281,12 +282,6 @@ void TokenFilter::apply(std::vector<std::string>& terms) const {
     }
     filter(tokens);
     terms = terms_of(tokens);
-}
-
-void LowercaseFilter::filter(std::vector<Token>& tokens) const {
-    for (Token& token : tokens) {
-        to_lower(token.term);
-    }
 }
 
 void UnicodeFoldingFilter::filter(std::vector<Token>& tokens) const {
@@ -330,7 +325,6 @@ StopWordFilter::StopWordFilter(const std::string& stop_words_path) {
 
     std::string word;
     while (file >> word) {
-        to_lower(word);
         fold(word);
         if (!word.empty()) {
             stop_words.insert(word);
