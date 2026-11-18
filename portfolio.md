@@ -36,6 +36,16 @@ bench/RESULTS.md · 100,000 documents
 | p95 | 1,163 µs | 742 µs   |
 | p99 | 2,019 µs | 1,111 µs |
 
+I re-ran the same benchmark on 19 November against the final code, alternating it with the build from that change, 7 runs each on the same machine. The machine measured slower that day, so compare these two columns with each other rather than with the table above. The later changes include a small per-thread cache of typo candidates, so a word that is already typed is not matched again on every keystroke.
+
+Re-run on 19 Nov 2026 · median of 7 alternating runs · identical results, 0 errors
+
+|     | after that change | final    |
+| --- | ----------------- | -------- |
+| p50 | 152 µs            | 23 µs    |
+| p95 | 908 µs            | 254 µs   |
+| p99 | 1,335 µs          | 996 µs   |
+
 ## Where I left it
 
 LuxCore is finished. It does what I set out to build, and I'm not adding to it.
