@@ -55,8 +55,7 @@ TEST(positionless_indexer_keeps_no_positions) {
 
     const std::optional<PostingList> list = counted.get_index().get_posting_list("body", "cat");
     CHECK(list.has_value());
-    CHECK(!list->has_positions(0));
-    CHECK(!list->has_positions(1));
+    CHECK(!list->has_positions());
     CHECK_EQ(list->postings.size(), static_cast<std::size_t>(2));
     CHECK(list->positions_of(0).empty());
     CHECK_EQ(list->postings[1].term_frequency, 3);
@@ -91,7 +90,7 @@ TEST(a_positioned_file_loads_without_positions_and_a_positionless_one_only_witho
 
     const Indexer stripped = Indexer::deserialize(full, "", IndexOptions{.positions = false});
     CHECK_EQ(stripped.get_index().memory_usage().position_bytes, static_cast<std::size_t>(0));
-    CHECK(!stripped.get_index().get_posting_list("body", "cat")->has_positions(0));
+    CHECK(!stripped.get_index().get_posting_list("body", "cat")->has_positions());
     for (const char* query : {"cat", "dog", "tre", "cta"}) {
         CHECK_EQ(ranking(stripped, query), ranking(positioned, query));
     }
@@ -114,36 +113,59 @@ TEST(a_positioned_file_loads_without_positions_and_a_positionless_one_only_witho
     }
 }
 
-TEST(a_list_can_mix_documents_with_and_without_positions) {
-    InvertedIndex index;
-    index.add_document(0, FieldTermFreqs{{"body", TermFreqs{{"cat", 2}}}});
-    index.add_document(1, FieldTermPositions{{"body", TermPositions{{"cat", {4, 9}}}}});
-    index.add_document(2, FieldTermFreqs{{"body", TermFreqs{{"cat", 1}}}});
-    index.add_document(3, FieldTermPositions{{"body", TermPositions{{"cat", {7}}}}});
+bool rejects(InvertedIndex& index, int doc_id, const auto& document) {
+    try {
+        index.add_document(doc_id, document);
+    } catch (const std::invalid_argument&) {
+        return true;
+    }
+    return false;
+}
 
-    std::optional<PostingList> list = index.get_posting_list("body", "cat");
-    CHECK_EQ(list->postings.size(), static_cast<std::size_t>(4));
-    CHECK(!list->has_positions(0));
-    CHECK(list->has_positions(1));
-    CHECK(!list->has_positions(2));
-    CHECK(list->has_positions(3));
-    CHECK_EQ(list->positions_of(1)[0], static_cast<std::uint32_t>(4));
-    CHECK_EQ(list->positions_of(1)[1], static_cast<std::uint32_t>(9));
-    CHECK_EQ(list->positions_of(3)[0], static_cast<std::uint32_t>(7));
+TEST(an_index_rejects_documents_whose_positions_do_not_match_it_and_stays_unchanged) {
+    InvertedIndex positioned(Positions::On);
+    InvertedIndex counted;
+    positioned.add_document(0, FieldTermPositions{{"body", TermPositions{{"cat", {4, 9}}}}});
+    counted.add_document(0, FieldTermFreqs{{"body", TermFreqs{{"cat", 2}}}});
+
+    CHECK(rejects(positioned, 0, FieldTermFreqs{{"body", TermFreqs{{"dog", 1}}}}));
+    CHECK(rejects(positioned, 1, FieldTermFreqs{{"body", TermFreqs{{"cat", 1}}}}));
+    CHECK(rejects(counted, 0, FieldTermPositions{{"body", TermPositions{{"dog", {1}}}}}));
+    CHECK(rejects(counted, 1, FieldTermPositions{{"body", TermPositions{{"cat", {3}}}}}));
+
+    CHECK_EQ(positioned.get_total_documents(), 1);
+    CHECK_EQ(positioned.get_document_frequency("dog"), static_cast<std::size_t>(0));
+    const std::optional<PostingList> kept = positioned.get_posting_list("body", "cat");
+    CHECK_EQ(kept->postings.size(), static_cast<std::size_t>(1));
+    CHECK_EQ(kept->positions_of(0).size(), static_cast<std::size_t>(2));
+    CHECK_EQ(kept->positions_of(0)[1], static_cast<std::uint32_t>(9));
+
+    CHECK_EQ(counted.get_total_documents(), 1);
+    CHECK_EQ(counted.get_document_frequency("dog"), static_cast<std::size_t>(0));
+    CHECK_EQ(counted.get_posting_list("body", "cat")->postings[0].term_frequency, 2);
+    CHECK(!counted.get_posting_list("body", "cat")->has_positions());
+}
+
+TEST(a_positioned_list_keeps_each_documents_positions_through_removals) {
+    InvertedIndex index(Positions::On);
+    index.add_document(0, FieldTermPositions{{"body", TermPositions{{"cat", {1, 2}}}}});
+    index.add_document(3, FieldTermPositions{{"body", TermPositions{{"cat", {7}}}}});
+    index.add_document(1, FieldTermPositions{{"body", TermPositions{{"cat", {4, 9}}}}});
+    index.add_document(2, FieldTermPositions{{"body", TermPositions{{"cat", {5, 6, 8}}}}});
 
     index.remove_document(1);
-    list = index.get_posting_list("body", "cat");
+    std::optional<PostingList> list = index.get_posting_list("body", "cat");
     CHECK_EQ(list->postings.size(), static_cast<std::size_t>(3));
-    CHECK(!list->has_positions(0));
-    CHECK(!list->has_positions(1));
-    CHECK(list->has_positions(2));
+    CHECK_EQ(list->postings[1].doc_id, 2);
+    CHECK_EQ(list->positions_of(0)[1], static_cast<std::uint32_t>(2));
+    CHECK_EQ(list->positions_of(1)[2], static_cast<std::uint32_t>(8));
     CHECK_EQ(list->positions_of(2)[0], static_cast<std::uint32_t>(7));
 
-    index.remove_document(3);
     index.remove_document(0);
     index.remove_document(2);
+    index.remove_document(3);
     CHECK(!index.get_posting_list("body", "cat"));
-    CHECK_EQ(index.get_total_documents(), 0);
+    CHECK_EQ(index.memory_usage().position_bytes, static_cast<std::size_t>(0));
 }
 
 TEST(the_public_index_saves_a_file_without_positions) {

@@ -15,10 +15,14 @@ constexpr std::uint32_t format_magic = 0x4358554C;
 constexpr std::uint32_t format_version = 1;
 constexpr std::size_t header_size = 16;
 
+Positions positions_of(IndexOptions options) {
+    return options.positions ? Positions::On : Positions::Off;
+}
+
 }
 
 Indexer::Indexer(const std::string& stop_words_path, IndexOptions options)
-    : options(options), analyzer(make_standard_analyzer(stop_words_path)) {}
+    : analyzer(make_standard_analyzer(stop_words_path)), inverted_index(positions_of(options)) {}
 
 IndexClocks& index_clocks() {
     static IndexClocks clocks;
@@ -28,7 +32,7 @@ IndexClocks& index_clocks() {
 PreparedDocument Indexer::prepare(std::span<const FieldText> fields) const {
     auto timed = index_clocks().analyze.time();
     PreparedDocument prepared;
-    DocumentTermsBuilder builder(options.positions);
+    DocumentTermsBuilder builder(inverted_index.positioned());
     std::unordered_map<std::string_view, std::uint32_t> next_base;
     for (const FieldText& field : fields) {
         if (field.options.indexed) {
@@ -87,7 +91,7 @@ int Indexer::add_prepared(const std::string& key, const PreparedDocument& prepar
     if (key.empty()) {
         throw std::invalid_argument("Indexer::add_document: empty key");
     }
-    if (prepared.terms.positioned != options.positions) {
+    if (!inverted_index.accepts(prepared.terms)) {
         throw std::invalid_argument("Indexer::add_prepared: the document was prepared with a different positions setting");
     }
     const std::optional<int> existing = [&] {
@@ -180,7 +184,7 @@ Indexer Indexer::deserialize(std::string_view data, const std::string& stop_word
     Indexer indexer(stop_words_path, options);
     indexer.doc_store = DocumentStore::read(reader);
     indexer.doc_keys = DocumentKeys::read(reader, indexer.doc_store);
-    indexer.inverted_index = InvertedIndex::read(reader, indexer.doc_store, options.positions);
+    indexer.inverted_index = InvertedIndex::read(reader, indexer.doc_store, positions_of(options));
     if (!reader.at_end()) {
         fail_format("unexpected bytes after the index");
     }

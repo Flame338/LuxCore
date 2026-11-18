@@ -177,15 +177,14 @@ void PostingStore::assign(ListId id, std::span<const std::uint32_t> docs, std::s
     }
 }
 
-void PostingStore::insert(ListId id, int doc_id, std::uint32_t frequency) {
+std::size_t PostingStore::insert(ListId id, int doc_id, std::uint32_t frequency) {
     List& list = lists[id];
     const std::uint32_t doc = static_cast<std::uint32_t>(doc_id);
     const std::uint32_t size = list.size;
     if (size == 0) {
         list.storage.single = {doc, frequency};
         list.size = 1;
-        insert_positions(id, 0, 1, {}, false);
-        return;
+        return 0;
     }
 
     const Postings old = view(list);
@@ -225,39 +224,23 @@ void PostingStore::insert(ListId id, int doc_id, std::uint32_t frequency) {
         list.width_code = code;
     }
     list.size = size + 1;
-    insert_positions(id, index, size + 1, {}, false);
+    return index;
 }
 
 void PostingStore::insert(ListId id, int doc_id, std::span<const std::uint32_t> positions) {
     const std::size_t stored = id < position_lists.size() ? position_lists[id].positions.size() : 0;
-    if (stored + positions.size() >= PositionList::no_positions) {
+    if (stored + positions.size() >= PositionList::limit) {
         throw std::length_error("LuxCore: one posting list holds at most 2^32 positions");
     }
-    // The plain insert has already made room in the offsets when the list keeps positions.
-    insert(id, doc_id, static_cast<std::uint32_t>(positions.size()));
-    const std::size_t index = view(lists[id]).lower_bound(doc_id);
-    insert_positions(id, index, lists[id].size, positions, true);
-}
-
-void PostingStore::insert_positions(ListId id, std::size_t index, std::size_t size,
-                                    std::span<const std::uint32_t> positions, bool positioned) {
-    const bool keeps_offsets = id < position_lists.size() && !position_lists[id].offsets.empty();
-    if (!positioned) {
-        if (keeps_offsets) {
-            PositionList& list = position_lists[id];
-            make_room_for(list.offsets, 1);
-            list.offsets.insert(list.offsets.begin() + index, PositionList::no_positions);
-        }
-        return;
-    }
+    const std::size_t index = insert(id, doc_id, static_cast<std::uint32_t>(positions.size()));
     if (id >= position_lists.size()) {
         position_lists.resize(lists.size());
     }
     PositionList& list = position_lists[id];
-    if (!keeps_offsets) {
-        list.offsets.assign(size, PositionList::no_positions);
+    if (!list.offsets.empty()) {
+        make_room_for(list.offsets, 1);
     }
-    list.offsets[index] = static_cast<std::uint32_t>(list.positions.size());
+    list.offsets.insert(list.offsets.begin() + index, static_cast<std::uint32_t>(list.positions.size()));
     make_room_for(list.positions, positions.size());
     list.positions.insert(list.positions.end(), positions.begin(), positions.end());
 }
@@ -269,12 +252,9 @@ void PostingStore::erase_positions(ListId id, std::size_t index, std::uint32_t f
     PositionList& list = position_lists[id];
     const std::uint32_t offset = list.offsets[index];
     list.offsets.erase(list.offsets.begin() + index);
-    if (offset == PositionList::no_positions) {
-        return;
-    }
     list.positions.erase(list.positions.begin() + offset, list.positions.begin() + offset + frequency);
     for (std::uint32_t& other : list.offsets) {
-        if (other != PositionList::no_positions && other > offset) {
+        if (other > offset) {
             other -= frequency;
         }
     }

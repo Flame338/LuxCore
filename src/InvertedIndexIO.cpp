@@ -56,7 +56,7 @@ void read_posting_list(ByteReader& reader, const DocumentStore& store, Tallies& 
                 fail_format("term frequency " + std::to_string(frequency) + " does not fit in the remaining " +
                             std::to_string(reader.remaining()) + " bytes");
             }
-            if (position_count + frequency >= PositionList::no_positions) {
+            if (position_count + frequency >= PositionList::limit) {
                 fail_format("too many positions in one posting list");
             }
             if (positions) {
@@ -113,7 +113,7 @@ void InvertedIndex::write(ByteWriter& writer) const {
                 previous = posting.doc_id;
 
                 writer.varint((static_cast<std::uint64_t>(posting.term_frequency) << 1) |
-                              (list.has_positions(i) ? 1 : 0));
+                              (positioned() ? 1 : 0));
                 std::uint32_t last = 0;
                 for (const std::uint32_t position : list.positions_of(i)) {
                     writer.varint(position - last);
@@ -124,8 +124,8 @@ void InvertedIndex::write(ByteWriter& writer) const {
     }
 }
 
-InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store, bool positions) {
-    InvertedIndex result;
+InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store, Positions positions) {
+    InvertedIndex result(positions);
     const std::size_t id_limit = store.id_limit();
     Tallies tallies{std::vector<long long>(id_limit), std::vector<int>(id_limit)};
     ReadList read;
@@ -152,7 +152,7 @@ InvertedIndex InvertedIndex::read(ByteReader& reader, const DocumentStore& store
                 fail_format("terms are not in ascending order");
             }
             previous = term;
-            read_posting_list(reader, store, tallies, positions, term, read);
+            read_posting_list(reader, store, tallies, result.positioned(), term, read);
 
             const TermId id = result.terms.intern(term);
             const ListId list = result.list_for(id, field_number);

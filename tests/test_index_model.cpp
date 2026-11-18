@@ -216,7 +216,7 @@ void check_against_model(const InvertedIndex& index, const Model& model, bool po
 
 void run_random_edits(bool positioned, unsigned seed, unsigned documents = 30, int steps = 1500) {
     std::mt19937 rng(seed);
-    InvertedIndex index;
+    InvertedIndex index(positioned ? Positions::On : Positions::Off);
     Model model;
     for (int step = 0; step < steps; step++) {
         const int doc_id = static_cast<int>(rng() % documents);

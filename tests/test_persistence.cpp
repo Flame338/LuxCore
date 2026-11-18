@@ -354,12 +354,20 @@ TEST(round_trip_keeps_every_observable_result) {
     CHECK_EQ(results_of(loaded), results);
 }
 
-InvertedIndex mixed_positions_index() {
+InvertedIndex positioned_index() {
+    InvertedIndex index(Positions::On);
+    index.add_document(0, FieldTermPositions{{"body", TermPositions{{"cat", {0, 2, 5}}, {"dog", {1}}}}});
+    index.add_document(1, FieldTermPositions{{"body", TermPositions{{"cat", {4, 9, 9, 20}}, {"fox", {0}}}}});
+    index.add_document(2, FieldTermPositions{{"body", TermPositions{{"cat", {3, 6}}}},
+                                             {"title", TermPositions{{"cat", {0}}, {"owl", {1, 2, 3, 4, 5, 6, 7}}}}});
+    index.add_document(4, FieldTermPositions{});
+    return index;
+}
+
+InvertedIndex counted_index() {
     InvertedIndex index;
     index.add_document(0, FieldTermFreqs{{"body", TermFreqs{{"cat", 3}, {"dog", 1}}}});
-    index.add_document(1, FieldTermPositions{{"body", TermPositions{{"cat", {4, 9, 9, 20}}, {"fox", {0}}}}});
-    index.add_document(2, FieldTermFreqs{{"body", TermFreqs{{"cat", 2}}}, {"title", TermFreqs{{"cat", 1}, {"owl", 7}}}});
-    index.add_document(4, FieldTermFreqs{});
+    index.add_document(2, FieldTermFreqs{{"body", TermFreqs{{"cat", 2}}}});
     return index;
 }
 
@@ -375,9 +383,9 @@ DocumentStore five_documents_without_3() {
 TEST(reading_without_positions_keeps_frequencies_and_drops_every_position) {
     const DocumentStore store = five_documents_without_3();
     ByteWriter writer;
-    mixed_positions_index().write(writer);
+    positioned_index().write(writer);
     ByteReader reader(writer.bytes());
-    const InvertedIndex loaded = InvertedIndex::read(reader, store, false);
+    const InvertedIndex loaded = InvertedIndex::read(reader, store, Positions::Off);
 
     CHECK(reader.at_end());
     CHECK_EQ(loaded.get_total_documents(), 4);
@@ -391,12 +399,12 @@ TEST(reading_without_positions_keeps_frequencies_and_drops_every_position) {
 TEST(reading_with_positions_rejects_a_posting_saved_without_them) {
     const DocumentStore store = five_documents_without_3();
     ByteWriter writer;
-    mixed_positions_index().write(writer);
+    counted_index().write(writer);
     ByteReader reader(writer.bytes());
 
     std::string message;
     try {
-        InvertedIndex::read(reader, store, true);
+        InvertedIndex::read(reader, store, Positions::On);
     } catch (const MissingPositions& missing) {
         message = missing.what();
     }

@@ -120,6 +120,9 @@ void InvertedIndex::add_document(int doc_id, const DocumentTerms& document) {
     if (doc_id < 0) {
         throw std::invalid_argument("InvertedIndex::add_document: negative document id");
     }
+    if (!accepts(document)) {
+        throw std::invalid_argument("InvertedIndex::add_document: the document's positions do not match the index");
+    }
     IndexClocks& clocks = index_clocks();
     {
         auto timed = clocks.invert_remove.time();
@@ -169,7 +172,7 @@ void InvertedIndex::add_document(int doc_id, const DocumentTerms& document) {
                 if (!in_another_list(id, list, doc_id)) {
                     terms.document_frequency(id)++;
                 }
-                if (document.positioned) {
+                if (positioned()) {
                     lists.insert(list, doc_id,
                                  std::span(document.positions).subspan(term.first_position, term.frequency));
                 } else {
