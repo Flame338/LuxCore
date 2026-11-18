@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -26,5 +27,9 @@ inline Decoded decode(std::string_view text, std::size_t pos) {
 void append(std::string& out, char32_t code_point);
 
 std::size_t count_code_points(std::string_view text);
+
+inline std::filesystem::path path(std::string_view text) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+}
 
 }

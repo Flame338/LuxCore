@@ -12,8 +12,11 @@
 #include "QueryParser.h"
 #include "Scoring.h"
 #include "Searcher.h"
+#include "Utf8.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <filesystem>
@@ -116,8 +119,9 @@ int clamp_to_int(std::size_t value) {
     return static_cast<int>(std::min<std::size_t>(value, INT_MAX));
 }
 
-std::filesystem::path path_from_utf8(const std::string& text) {
-    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+std::uint64_t next_save_number() {
+    static std::atomic<std::uint64_t> counter = 0;
+    return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 class FileSink : public ByteSink {
@@ -311,26 +315,37 @@ std::optional<std::string> Index::snippet_query(const std::string& key, const st
 }
 
 void Index::save(const std::string& path) const {
-    const std::filesystem::path file = path_from_utf8(path);
-    FileSink sink(file, path);
-    try {
-        {
-            std::shared_lock lock(impl->mutex);
-            auto timed = index_clocks().serialize.time();
-            impl->indexer.serialize(sink);
+    const std::filesystem::path file = utf8::path(path);
+    std::filesystem::path temporary = file;
+    temporary += "." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+                 std::to_string(next_save_number()) + ".tmp";
+    std::error_code ignored;
+    {
+        FileSink sink(temporary, path);
+        try {
+            {
+                std::shared_lock lock(impl->mutex);
+                auto timed = index_clocks().serialize.time();
+                impl->indexer.serialize(sink);
+            }
+            auto timed = index_clocks().write.time();
+            sink.close();
+        } catch (...) {
+            sink.close_quietly();
+            std::filesystem::remove(temporary, ignored);
+            throw;
         }
-        auto timed = index_clocks().write.time();
-        sink.close();
-    } catch (...) {
-        sink.close_quietly();
-        std::error_code ignored;
-        std::filesystem::remove(file, ignored);
-        throw;
+    }
+    std::error_code renamed;
+    std::filesystem::rename(temporary, file, renamed);
+    if (renamed) {
+        std::filesystem::remove(temporary, ignored);
+        throw IoError("LuxCore: cannot replace " + path + ": " + renamed.message());
     }
 }
 
 Index Index::load(const std::string& path, IndexConfig config) {
-    const std::filesystem::path file = path_from_utf8(path);
+    const std::filesystem::path file = utf8::path(path);
     std::error_code error;
     if (!std::filesystem::is_regular_file(file, error)) {
         throw IoError("LuxCore: " + path + " is not a readable file");

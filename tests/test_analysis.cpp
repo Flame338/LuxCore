@@ -125,9 +125,24 @@ TEST(analyzer_stop_words_from_a_file_match_folded_tokens) {
     CHECK_EQ(with_stop_words_file("\u0301\n", "a"), "[a]");
 }
 
-TEST(analyzer_with_a_missing_stop_word_file_keeps_every_word) {
-    const Analyzer analyzer = make_standard_analyzer("no-such-file.txt");
-    CHECK_EQ(join(analyzer.analyze("The Cat")), "[the][cat]");
+TEST(analyzer_with_a_missing_stop_word_file_throws_and_names_the_file) {
+    std::string failure = "<no error>";
+    try {
+        make_standard_analyzer("no-such-file.txt");
+    } catch (const std::runtime_error& error) {
+        failure = error.what();
+    }
+    CHECK(failure.find("no-such-file.txt") != std::string::npos);
+}
+
+TEST(analyzer_reads_a_stop_word_file_whose_path_is_not_ascii) {
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / u8"luxcore_stöp_wörds_東京.txt";
+    std::ofstream(path) << "cat\n";
+    const std::u8string utf8 = path.u8string();
+    const std::string result =
+        join(make_standard_analyzer(std::string(utf8.begin(), utf8.end())).analyze("The Cat sat"));
+    std::filesystem::remove(path);
+    CHECK_EQ(result, "[the][sat]");
 }
 
 TEST(analyze_query_handles_apostrophes_at_the_end_of_the_query) {
