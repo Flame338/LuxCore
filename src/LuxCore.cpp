@@ -35,6 +35,18 @@ std::size_t QueryError::offset() const {
     return error_offset;
 }
 
+namespace {
+
+HighlightOptions highlight_options(const SnippetOptions& options) {
+    return {options.length, options.start_marker, options.end_marker, options.ellipsis};
+}
+
+const std::string body_field = "body";
+
+enum class Syntax { Plain, Query };
+
+}
+
 struct Index::Impl {
     Indexer indexer;
     bool positions;
@@ -72,6 +84,36 @@ struct Index::Impl {
         }
         return indexer.stored_value(*id, field);
     }
+
+    std::unique_ptr<Query> parse_as(const std::string& text, Syntax syntax) const {
+        return syntax == Syntax::Query ? parse(text) : nullptr;
+    }
+
+    MatchPlan plan(const std::string& text, const Query* parsed, std::string_view field) const {
+        if (parsed == nullptr) {
+            return searcher().plan(text);
+        }
+        return make_match_plan(indexer.get_analyzer(), *parsed, field);
+    }
+
+    std::optional<std::string> stored_snippet(const std::string& key, const std::string& field,
+                                              const std::string& text, Syntax syntax,
+                                              const SnippetOptions& options) const {
+        std::shared_lock lock(mutex);
+        const std::unique_ptr<Query> parsed = parse_as(text, syntax);
+        const std::optional<std::string_view> stored = stored_text(key, field);
+        if (!stored) {
+            return std::nullopt;
+        }
+        return Highlighter(highlight_options(options)).snippet(*stored, plan(text, parsed.get(), field));
+    }
+
+    std::string text_snippet(std::string_view body, const std::string& text, Syntax syntax,
+                             const SnippetOptions& options) const {
+        std::shared_lock lock(mutex);
+        const std::unique_ptr<Query> parsed = parse_as(text, syntax);
+        return Highlighter(highlight_options(options)).snippet(body, plan(text, parsed.get(), body_field));
+    }
 };
 
 struct Prepared::Impl {
@@ -87,12 +129,6 @@ int clamp_to_int(std::size_t value) {
 std::filesystem::path path_from_utf8(const std::string& text) {
     return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
 }
-
-HighlightOptions highlight_options(const SnippetOptions& options) {
-    return {options.length, options.start_marker, options.end_marker, options.ellipsis};
-}
-
-const std::string body_field = "body";
 
 class FileSink : public ByteSink {
 private:
@@ -267,39 +303,21 @@ std::vector<Hit> Index::search_query(const std::string& text, std::size_t limit)
 
 std::optional<std::string> Index::snippet(const std::string& key, const std::string& field, const std::string& text,
                                           const SnippetOptions& options) const {
-    std::shared_lock lock(impl->mutex);
-    const std::optional<std::string_view> stored = impl->stored_text(key, field);
-    if (!stored) {
-        return std::nullopt;
-    }
-    const TextPlan plan = impl->searcher().plan(text);
-    return Highlighter(highlight_options(options)).snippet(*stored, plan);
+    return impl->stored_snippet(key, field, text, Syntax::Plain, options);
 }
 
 std::string Index::snippet_text(std::string_view body, const std::string& text, const SnippetOptions& options) const {
-    std::shared_lock lock(impl->mutex);
-    const TextPlan plan = impl->searcher().plan(text);
-    return Highlighter(highlight_options(options)).snippet(body, plan);
+    return impl->text_snippet(body, text, Syntax::Plain, options);
 }
 
 std::string Index::snippet_text_query(std::string_view body, const std::string& text,
                                       const SnippetOptions& options) const {
-    std::shared_lock lock(impl->mutex);
-    const std::unique_ptr<Query> query = impl->parse(text);
-    const MatchPlan plan = make_match_plan(impl->indexer.get_analyzer(), *query, body_field);
-    return Highlighter(highlight_options(options)).snippet(body, plan);
+    return impl->text_snippet(body, text, Syntax::Query, options);
 }
 
 std::optional<std::string> Index::snippet_query(const std::string& key, const std::string& field,
                                                 const std::string& text, const SnippetOptions& options) const {
-    std::shared_lock lock(impl->mutex);
-    const std::unique_ptr<Query> query = impl->parse(text);
-    const std::optional<std::string_view> stored = impl->stored_text(key, field);
-    if (!stored) {
-        return std::nullopt;
-    }
-    const MatchPlan plan = make_match_plan(impl->indexer.get_analyzer(), *query, field);
-    return Highlighter(highlight_options(options)).snippet(*stored, plan);
+    return impl->stored_snippet(key, field, text, Syntax::Query, options);
 }
 
 void Index::save(const std::string& path) const {

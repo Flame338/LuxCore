@@ -2,6 +2,7 @@
 
 #include "LuxCore.h"
 
+#include <functional>
 #include <memory>
 #include <new>
 #include <optional>
@@ -98,8 +99,8 @@ lux_status snippet_into(const lux_index* index, const char* key, std::size_t key
     }
     return guarded([&] {
         std::optional<std::string> value =
-            snippet(index->index, std::string(key, key_length), std::string(field, field_length),
-                    std::string(query, query_length), snippet_options(options));
+            std::invoke(snippet, index->index, std::string(key, key_length), std::string(field, field_length),
+                        std::string(query, query_length), snippet_options(options));
         if (!value) {
             return LUX_NOT_FOUND;
         }
@@ -294,20 +295,14 @@ lux_status lux_index_snippet(const lux_index* index, const char* key, std::size_
                              std::size_t field_length, const char* query, std::size_t query_length,
                              const lux_snippet_options* options, lux_text** out) {
     return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out, nullptr,
-                        [](const luxcore::Index& target, const std::string& key_text, const std::string& field_text,
-                           const std::string& query_text, const luxcore::SnippetOptions& settings) {
-                            return target.snippet(key_text, field_text, query_text, settings);
-                        });
+                        &luxcore::Index::snippet);
 }
 
 lux_status lux_index_snippet_query(const lux_index* index, const char* key, std::size_t key_length, const char* field,
                                    std::size_t field_length, const char* query, std::size_t query_length,
                                    const lux_snippet_options* options, lux_text** out, std::size_t* error_offset) {
     return snippet_into(index, key, key_length, field, field_length, query, query_length, options, out, error_offset,
-                        [](const luxcore::Index& target, const std::string& key_text, const std::string& field_text,
-                           const std::string& query_text, const luxcore::SnippetOptions& settings) {
-                            return target.snippet_query(key_text, field_text, query_text, settings);
-                        });
+                        &luxcore::Index::snippet_query);
 }
 
 namespace {
@@ -326,8 +321,8 @@ lux_status snippet_text_into(const lux_index* index, const char* text, std::size
         return LUX_INVALID_ARGUMENT;
     }
     return guarded([&] {
-        *out = new lux_text{snippet(index->index, std::string_view(text, text_length), std::string(query, query_length),
-                                    snippet_options(options))};
+        *out = new lux_text{std::invoke(snippet, index->index, std::string_view(text, text_length),
+                                        std::string(query, query_length), snippet_options(options))};
         return LUX_OK;
     }, error_offset);
 }
@@ -337,10 +332,7 @@ lux_status snippet_text_into(const lux_index* index, const char* text, std::size
 lux_status lux_index_snippet_text(const lux_index* index, const char* text, std::size_t text_length, const char* query,
                                   std::size_t query_length, const lux_snippet_options* options, lux_text** out) {
     return snippet_text_into(index, text, text_length, query, query_length, options, out, nullptr,
-                             [](const luxcore::Index& target, std::string_view body, const std::string& query_text,
-                                const luxcore::SnippetOptions& settings) {
-                                 return target.snippet_text(body, query_text, settings);
-                             });
+                             &luxcore::Index::snippet_text);
 }
 
 lux_status lux_index_snippet_text_query(const lux_index* index, const char* text, std::size_t text_length,
@@ -348,10 +340,7 @@ lux_status lux_index_snippet_text_query(const lux_index* index, const char* text
                                         const lux_snippet_options* options, lux_text** out,
                                         std::size_t* error_offset) {
     return snippet_text_into(index, text, text_length, query, query_length, options, out, error_offset,
-                             [](const luxcore::Index& target, std::string_view body, const std::string& query_text,
-                                const luxcore::SnippetOptions& settings) {
-                                 return target.snippet_text_query(body, query_text, settings);
-                             });
+                             &luxcore::Index::snippet_text_query);
 }
 
 lux_status lux_index_suggest(const lux_index* index, const char* query, std::size_t query_length, std::size_t limit,
